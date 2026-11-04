@@ -1,0 +1,32 @@
+# release-plz opens a release pull request with the version bump and the
+# CHANGELOG entry; merging it is a maintainer's decision. See CONTRIBUTING.md,
+# "Releases".
+
+[workspace]
+# Versions come from git tags (`v{{ version }}`), not crates.io: publishing
+# stays off until a maintainer enables it by removing this line and adding a
+# CARGO_REGISTRY_TOKEN or trusted publishing.
+git_only = true
+publish = false
+# Tag and GitHub release only when the release pull request merges.
+release_always = false
+semver_check = true
+
+[changelog]
+protect_breaking_commits = true
+sort_commits = "oldest"
+# One section per type in .convco, in its order. The release pull request's
+# own commit is left out.
+commit_parsers = [
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Bug Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Refactoring" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Tests" },
+  { message = "^build", group = "Build" },
+  { message = "^ci", group = "CI" },
+  { message = "^chore", group = "Chores" },
+  { message = "^revert", group = "Reverts" },
+]
