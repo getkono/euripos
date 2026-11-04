@@ -46,8 +46,12 @@ run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
 run = "cargo deny --locked check"
 
 [tasks.test]
-description = "Unit and integration tests on the host"
-run = "cargo test --workspace --all-targets --locked"
+description = "Unit, integration and doc tests on the host"
+# `--all-targets` leaves out doctests, so they run as their own step.
+run = [
+  "cargo test --workspace --all-targets --locked",
+  "cargo test --workspace --doc --locked",
+]
 
 [tasks."docs:check"]
 description = "Rustdoc with warnings denied"
@@ -120,10 +124,12 @@ target="${usage_target?}"
 cargo ndk --platform "$EURIPOS_ANDROID_API" -t "$target" test --workspace --locked --no-run --message-format=json \
   | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true) | .executable // empty' \
   > target/android-tests.txt
-while read -r exe; do
+# The list is read on fd 3 and adb gets no stdin: `adb shell` otherwise reads
+# the rest of the list and every binary after the first is skipped.
+while read -r exe <&3; do
   remote="/data/local/tmp/$(basename "$exe")"
-  adb push "$exe" "$remote" >/dev/null
-  adb shell "chmod 755 $remote && $remote; echo exit=\$?" | tee target/android-test.log
+  adb push "$exe" "$remote" >/dev/null </dev/null
+  adb shell -n "chmod 755 $remote && $remote; echo exit=\$?" | tee target/android-test.log
   grep -q '^exit=0' target/android-test.log
-done < target/android-tests.txt
+done 3< target/android-tests.txt
 '''

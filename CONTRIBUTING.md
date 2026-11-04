@@ -17,7 +17,7 @@ mise is the task interface. CI runs these same tasks, so a green `mise run check
 | `mise run check` | `lint`, `test`, `docs:check` and `api:check` |
 | `mise run fix` | `cargo fmt` and `cargo clippy --fix` |
 | `mise run lint` | `cargo fmt --check`, clippy pedantic with warnings denied, `cargo deny check` |
-| `mise run test` | Host unit and integration tests |
+| `mise run test` | Host unit, integration and doc tests |
 | `mise run docs:check` | rustdoc with warnings denied |
 | `mise run api:check` | The facade crate's public API through `cargo public-api` (pinned nightly) |
 | `mise run msrv` | `cargo check` on the declared `rust-version` |
