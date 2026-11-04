@@ -87,11 +87,11 @@ Option 1 is how the hyper-util pool layers are meant to compose for ALPN, and it
 
 ### Rationale
 
-Option 1 is what the scope and ADR 0001 fix. Option 2 is the ADR's end state, and #32 reaches it once #29 lands; doing it here would fail the `check` and `gates` jobs for every non-host target. Option 3 is a second TLS stack on the platforms where the scope names rustls. On Android the platform verifier needs the trust initialisation the Android integration (#12) adds; until then `https` there fails with `ErrorKind::Tls`.
+Option 1 is what the scope and ADR 0001 fix. Option 2 is the ADR's end state, and #32 reaches it once #29 lands; doing it here would fail the `check` and `gates` jobs for every non-host target. Option 3 is a second TLS stack on the platforms where the scope names rustls. On Android the platform verifier needs the trust initialisation the Android integration (#12) adds; until then the verifier, uninitialised, would panic while verifying a certificate, so `crates/euripos/src/platform/android.rs` reports it unavailable and `tls.rs` fails `https` there with `ErrorKind::Tls` before calling it.
 
 ### Validated by
 
-`tls::tests::alpn_offers_h2_before_http1`, `client::tests::tls::*`, and `mise run api:cfg` (the public API is the same on every target and feature set). That the platform verifier accepts a public server's certificate is checked by hand, not in CI, which has no internet dependency in tests (CONTRIBUTING.md, "Tests").
+`tls::tests::alpn_offers_h2_before_http1`, `tls::tests::an_unavailable_platform_verifier_fails_as_tls`, `platform::android::tests::platform_verifier_is_unavailable_until_initialised` (the `android` CI job, on the emulator), `client::tests::tls::*`, and `mise run api:cfg` (the public API is the same on every target and feature set). That the platform verifier accepts a public server's certificate is checked by hand, not in CI, which has no internet dependency in tests (CONTRIBUTING.md, "Tests").
 
 ## Default timeouts
 

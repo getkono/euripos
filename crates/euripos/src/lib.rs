@@ -38,6 +38,7 @@ mod client;
 mod error;
 mod facts;
 mod marker;
+mod platform;
 mod pool;
 mod timeout;
 mod tls;

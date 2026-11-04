@@ -12,7 +12,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 
-use crate::{Error, ErrorKind};
+use crate::{Error, ErrorKind, platform};
 
 /// The ALPN protocol IDs offered, most preferred first.
 const ALPN: [&[u8]; 2] = [b"h2", b"http/1.1"];
@@ -86,12 +86,14 @@ fn provider() -> Result<Arc<CryptoProvider>, Error> {
 /// A configuration that verifies servers with the platform verifier and offers
 /// [`ALPN`].
 fn platform_config() -> Result<ClientConfig, Error> {
-    platform_config_where(Ok(()))
+    platform_config_where(platform::platform_verifier())
 }
 
 /// [`platform_config`], where `verifier` is what the platform reports about
-/// its verifier.
-fn platform_config_where(_verifier: Result<(), &'static str>) -> Result<ClientConfig, Error> {
+/// its verifier. One reported unavailable fails as [`ErrorKind::Tls`] without
+/// being called, because on Android it would panic.
+fn platform_config_where(verifier: Result<(), &'static str>) -> Result<ClientConfig, Error> {
+    verifier.map_err(|reason| Error::with_source(ErrorKind::Tls, reason))?;
     let provider = provider()?;
     let verifier = rustls_platform_verifier::Verifier::new(provider.clone())
         .map_err(|error| Error::with_source(ErrorKind::Tls, error))?;
