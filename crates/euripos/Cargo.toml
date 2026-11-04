@@ -12,6 +12,9 @@ keywords = ["http", "client", "async", "network"]
 categories = ["network-programming", "web-programming::http-client"]
 
 [dependencies]
+bytes = "1"
+http = "1"
+http-body = "1"
 
 [lints]
 workspace = true
