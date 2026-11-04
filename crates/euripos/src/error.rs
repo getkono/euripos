@@ -20,19 +20,11 @@ pub struct Error {
 
 impl Error {
     /// An error of `kind` with no underlying cause.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "constructed by the transport; TODO(#3)")
-    )]
     pub(crate) fn new(kind: ErrorKind) -> Self {
         Self { kind, source: None }
     }
 
     /// An error of `kind` caused by `source`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "constructed by the transport; TODO(#3)")
-    )]
     pub(crate) fn with_source(kind: ErrorKind, source: impl Into<Source>) -> Self {
         Self {
             kind,
