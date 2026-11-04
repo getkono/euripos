@@ -189,6 +189,84 @@ async fn read_stall_timeout_fires_while_the_body_stops_arriving() {
 }
 
 #[tokio::test]
+async fn a_connection_whose_request_timed_out_before_its_head_is_not_reused() {
+    let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = accepted.clone();
+    let address = server(move |mut tcp| {
+        // The first connection never answers; later ones answer in full.
+        let first = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+        async move {
+            read_head(&mut tcp).await;
+            if !first {
+                let full = b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello";
+                tcp.write_all(full).await.expect("write");
+            }
+            hold(tcp).await;
+        }
+    })
+    .await;
+    let client = client(|builder| builder.total_timeout(SHORT));
+    let (timed_out, _) = bounded(get(&client, format!("http://{address}/"))).await;
+    assert_eq!(
+        timed_out.err().map(|error| error.kind()),
+        Some(ErrorKind::Timeout(TimeoutKind::Total))
+    );
+    let (body, _) = bounded(async {
+        let response = get(&client, format!("http://{address}/"))
+            .await
+            .expect("a response on a new connection");
+        read_to_end(response.into_body()).await
+    })
+    .await;
+    assert_eq!(body.expect("the body"), b"hello");
+    assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn a_connection_whose_body_stalled_is_not_reused() {
+    let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = accepted.clone();
+    let address = server(move |mut tcp| {
+        // The first connection stalls mid-body; later ones answer in full.
+        let first = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+        async move {
+            read_head(&mut tcp).await;
+            if first {
+                let partial = b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nten bytes!";
+                tcp.write_all(partial).await.expect("write");
+                hold(tcp).await;
+            } else {
+                let full = b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello";
+                tcp.write_all(full).await.expect("write");
+                hold(tcp).await;
+            }
+        }
+    })
+    .await;
+    let client = client(|builder| builder.read_stall_timeout(SHORT));
+    let (stalled, _) = bounded(async {
+        let response = get(&client, format!("http://{address}/"))
+            .await
+            .expect("the head arrives");
+        read_to_end(response.into_body()).await
+    })
+    .await;
+    assert_eq!(
+        stalled.err().map(|error| error.kind()),
+        Some(ErrorKind::Timeout(TimeoutKind::ReadStall))
+    );
+    let (body, _) = bounded(async {
+        let response = get(&client, format!("http://{address}/"))
+            .await
+            .expect("a response on a new connection");
+        read_to_end(response.into_body()).await
+    })
+    .await;
+    assert_eq!(body.expect("the body"), b"hello");
+    assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn total_timeout_fires_while_the_response_head_does_not_arrive() {
     let address = server(|mut tcp| async move {
         read_head(&mut tcp).await;
