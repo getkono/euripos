@@ -1,0 +1,129 @@
+# The task interface: every gate CI runs is a task here, and CI runs the task.
+# Rust itself comes from rust-toolchain.toml through rustup.
+
+[tools]
+hk = "2.7.0"
+pkl = "0.32.1"
+"github:convco/convco" = "0.7.2"
+cargo-deny = "0.20.2"
+"cargo:cargo-public-api" = "0.52.0"
+"cargo:cargo-ndk" = "4.1.2"
+"github:obi1kenobi/cargo-semver-checks" = "0.51.0"
+cargo-binstall = "latest"
+
+[settings]
+# Install cargo tools from prebuilt binaries where one exists.
+cargo.binstall = true
+
+[env]
+# The nightly that `cargo public-api` reads rustdoc JSON from.
+EURIPOS_API_NIGHTLY = "nightly-2026-10-22"
+# The Android API floor builds target (issue #12).
+EURIPOS_ANDROID_API = "29"
+
+[tasks.check]
+description = "Every local gate: lint, test, docs and API"
+depends = ["lint", "test", "docs:check", "api:check"]
+
+[tasks.fix]
+description = "Apply formatter and clippy fixes"
+run = [
+  "cargo fmt --all",
+  "cargo clippy --workspace --all-targets --locked --fix --allow-dirty --allow-staged",
+]
+
+[tasks.lint]
+description = "Formatting, clippy pedantic with warnings denied, and cargo-deny"
+depends = ["lint:fmt", "lint:clippy", "lint:deny"]
+
+[tasks."lint:fmt"]
+run = "cargo fmt --all --check"
+
+[tasks."lint:clippy"]
+run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
+
+[tasks."lint:deny"]
+run = "cargo deny --locked check"
+
+[tasks.test]
+description = "Unit and integration tests on the host"
+run = "cargo test --workspace --all-targets --locked"
+
+[tasks."docs:check"]
+description = "Rustdoc with warnings denied"
+env = { RUSTDOCFLAGS = "-D warnings" }
+run = "cargo doc --workspace --no-deps --locked"
+
+[tasks."api:check"]
+description = "Render the public API of the facade crate"
+run = [
+  "rustup toolchain install $EURIPOS_API_NIGHTLY --profile minimal --no-self-update",
+  "cargo +$EURIPOS_API_NIGHTLY public-api -p euripos --simplified",
+]
+
+[tasks.msrv]
+description = "Check the workspace on the declared rust-version"
+run = [
+  "rustup toolchain install 1.97 --profile minimal --no-self-update",
+  "cargo +1.97 check --workspace --all-targets --locked",
+]
+
+[tasks."commits:check"]
+description = "Conventional Commits on this branch since the default branch"
+usage = 'arg "[base]" help="The ref the branch started from" default="origin/main"'
+run = 'convco check "${usage_base?}..HEAD"'
+
+[tasks.size]
+description = "Stripped size of the minimal client for one target"
+usage = 'arg "[target]" help="Target triple; the host when omitted"'
+shell = "bash -c"
+run = '''
+set -euo pipefail
+target="${usage_target:-}"
+if [ -z "$target" ]; then target="$(rustc -vV | sed -n 's/^host: //p')"; fi
+export CARGO_PROFILE_RELEASE_STRIP=symbols
+case "$target" in
+  *-linux-android)
+    cargo ndk --platform "$EURIPOS_ANDROID_API" -t "$target" build --release --locked -p euripos --example minimal ;;
+  *)
+    cargo build --release --locked -p euripos --example minimal --target "$target" ;;
+esac
+bin="target/$target/release/examples/minimal"
+if [ -f "$bin.exe" ]; then bin="$bin.exe"; fi
+bytes="$(wc -c < "$bin" | tr -d ' ')"
+echo "$target: $bytes bytes stripped"
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  printf '| `%s` | %s |\n' "$target" "$bytes" >> "$GITHUB_STEP_SUMMARY"
+fi
+'''
+
+[tasks."test:ios-sim"]
+description = "Run the test binaries on a booted iOS simulator (macOS only)"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+udid="$(xcrun simctl list devices available --json \
+  | jq -r '[.devices | to_entries[] | select(.key | test("iOS")) | .value[] | select(.name | test("iPhone"))][0].udid')"
+xcrun simctl boot "$udid" || true
+xcrun simctl bootstatus "$udid" -b
+export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUNNER="xcrun simctl spawn $udid"
+cargo test --workspace --locked --target aarch64-apple-ios-sim
+'''
+
+[tasks."test:android"]
+description = "Run the test binaries on a connected Android device or emulator over adb"
+usage = 'arg "[target]" help="Android target triple" default="x86_64-linux-android"'
+shell = "bash -c"
+run = '''
+set -euo pipefail
+target="${usage_target?}"
+cargo ndk --platform "$EURIPOS_ANDROID_API" -t "$target" test --workspace --locked --no-run --message-format=json \
+  | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true) | .executable // empty' \
+  > target/android-tests.txt
+while read -r exe; do
+  remote="/data/local/tmp/$(basename "$exe")"
+  adb push "$exe" "$remote" >/dev/null
+  adb shell "chmod 755 $remote && $remote; echo exit=\$?" | tee target/android-test.log
+  grep -q '^exit=0' target/android-test.log
+done < target/android-tests.txt
+'''
