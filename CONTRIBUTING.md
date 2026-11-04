@@ -26,7 +26,7 @@ mise is the task interface. CI runs these same tasks, so a green `mise run check
 | `mise run api:semver [base]` | `cargo-semver-checks` against `base` (default `origin/main`); breaking only where a commit declares it |
 | `mise run gates:selftest` | Proves each API gate and clippy pedantic reject a seeded violation |
 | `mise run msrv` | `cargo check` on the declared `rust-version` |
-| `mise run size [target]` | Stripped size of the minimal client for a target |
+| `mise run size [target]` | Stripped size of the minimal client for a target; CI holds it to a budget |
 | `mise run commits:check [base]` | Conventional Commits on the branch since `base` |
 
 `test:ios-sim` and `test:android` run the test binaries on a simulator or an emulator; CI uses them, and they work locally with Xcode or with an Android NDK and a device on adb.
@@ -92,11 +92,13 @@ The [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/checklist.h
 - Features are additive and never change a public type or signature: no `cfg(feature)` on a public item, the same rule as `cfg(target_os)`.
 - Feature names are kebab-case. A choice between implementations of one concern is `<concern>-<choice>`, for example `crypto-ring`; the concern stays open to a second choice without renaming the first.
 - Default features are the smallest set that makes a working client on every supported platform.
-- One crypto provider (ring) and one runtime (tokio) are in the dependency graph; `deny.toml` bans the alternatives. Admitting another moves it out of the ban list in the change that adds its feature.
+- One crypto provider (ring) and one runtime (tokio) are in the dependency graph; `deny.toml` bans the alternatives. Admitting another moves it out of the ban list in the change that adds its feature. [ADR 0001](docs/adr/0001-crypto-provider.md) sets how provider features combine.
 
 ## Dependencies
 
 `cargo deny check` runs in `mise run lint`. It allows permissive licenses compatible with MIT OR Apache-2.0, crates.io as the only source, and no banned crate. A new dependency states in its pull request why it is needed.
+
+The `size-budget` workflow fails when the stripped minimal client on any target exceeds its budget, the size first measured plus 10%. Raising a budget needs a commit whose message says what grew, by how much and why; see [ADR 0001](docs/adr/0001-crypto-provider.md).
 
 ## Releases
 

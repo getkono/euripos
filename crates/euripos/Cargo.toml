@@ -11,6 +11,13 @@ readme = "../../README.md"
 keywords = ["http", "client", "async", "network"]
 categories = ["network-programming", "web-programming::http-client"]
 
+[features]
+default = ["crypto-ring"]
+# The crypto provider rustls and quinn use, one `crypto-<provider>` feature
+# each; see docs/adr/0001-crypto-provider.md. Nothing uses a provider yet: the
+# change that adds TLS makes this enable `rustls/ring`.
+crypto-ring = []
+
 [dependencies]
 bytes = "1"
 http = "1"
