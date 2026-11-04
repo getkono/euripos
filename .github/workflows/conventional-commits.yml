@@ -1,0 +1,49 @@
+name: conventional-commits
+
+# Pull requests are squash-merged, so the title becomes the commit on main and
+# must be a Conventional Commit. The branch's own commits are checked too: the
+# atomic-commit rule applies within a pull request.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conventional-commits-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: pr title
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          install_args: github:convco/convco
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$TITLE" | convco check --from-stdin
+
+  commits:
+    name: commits
+    runs-on: ubuntu-24.04
+    if: github.event.action != 'edited'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          install_args: github:convco/convco
+      - env:
+          MISE_TASK_RUN_AUTO_INSTALL: "false"
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # HEAD is the merge of the branch into the base; convco skips merges.
+        run: mise run commits:check "$BASE_SHA"
