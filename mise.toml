@@ -23,7 +23,7 @@ EURIPOS_ANDROID_API = "29"
 
 [tasks.check]
 description = "Every local gate: lint, test, docs and API"
-depends = ["lint", "test", "docs:check", "api:check"]
+depends = ["lint", "test", "docs:check", "api"]
 
 [tasks.fix]
 description = "Apply formatter and clippy fixes"
@@ -58,12 +58,67 @@ description = "Rustdoc with warnings denied"
 env = { RUSTDOCFLAGS = "-D warnings" }
 run = "cargo doc --workspace --no-deps --locked"
 
+[tasks.api]
+description = "Every public API gate that needs no base: the snapshot and the cfg lint"
+depends = ["api:check", "api:cfg"]
+
 [tasks."api:check"]
-description = "Render the public API of the facade crate"
-run = [
-  "rustup toolchain install $EURIPOS_API_NIGHTLY --profile minimal --no-self-update",
-  "cargo +$EURIPOS_API_NIGHTLY public-api -p euripos --simplified",
-]
+description = "Fail when the facade's public API differs from its committed snapshot"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+rustup toolchain install "$EURIPOS_API_NIGHTLY" --profile minimal --no-self-update
+out="${CARGO_TARGET_DIR:-target}/public-api"
+mkdir -p "$out"
+cargo "+$EURIPOS_API_NIGHTLY" public-api -p euripos --simplified > "$out/euripos.txt"
+if ! diff -u crates/euripos/tests/public-api/euripos.txt "$out/euripos.txt"; then
+  echo "error: the public API differs from crates/euripos/tests/public-api/euripos.txt;" \
+    "review the diff above and run \`mise run api:bless\` if it is intended" >&2
+  exit 1
+fi
+'''
+
+[tasks."api:bless"]
+description = "Rewrite the public API snapshot from the current tree"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+rustup toolchain install "$EURIPOS_API_NIGHTLY" --profile minimal --no-self-update
+cargo "+$EURIPOS_API_NIGHTLY" public-api -p euripos --simplified > crates/euripos/tests/public-api/euripos.txt
+'''
+
+[tasks."api:cfg"]
+description = "Fail when the public API differs between platforms or feature sets"
+run = "scripts/lint-public-cfg"
+
+[tasks."api:semver"]
+description = "cargo-semver-checks against a base revision or a baseline directory"
+usage = 'arg "[base]" help="A git revision, or a directory holding the baseline workspace" default="origin/main"'
+shell = "bash -c"
+run = '''
+set -euo pipefail
+base="${usage_base?}"
+if [ -d "$base" ]; then
+  baseline=(--baseline-root "$base")
+  breaking=""
+else
+  baseline=(--baseline-rev "$base")
+  # A branch that declares a breaking change may make one; see CONTRIBUTING.md.
+  breaking="$(git log --format=%B "$base..HEAD" | grep -E '^[a-z]+(\([^)]*\))?!:|^BREAKING[ -]CHANGE:' || true)"
+fi
+version="$(cargo metadata --format-version 1 --no-deps --locked | jq -r '.packages[] | select(.name == "euripos") | .version')"
+# The largest bump that is not breaking: patch before 1.0, minor after.
+if [ -n "$breaking" ]; then release=major
+elif [[ "$version" == 0.* ]]; then release=patch
+else release=minor
+fi
+echo "semver: checking euripos $version as a $release release against $base"
+cargo semver-checks -p euripos "${baseline[@]}" --release-type "$release"
+'''
+
+[tasks."gates:selftest"]
+description = "Prove each static gate fails on a seeded violation"
+run = "scripts/gate-selftest"
 
 [tasks.msrv]
 description = "Check the workspace on the declared rust-version"

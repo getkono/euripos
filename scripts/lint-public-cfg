@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Fails when the facade crate's public API is not the same on every supported
+# platform and feature set: the observable effect of a `cfg(target_os)`,
+# `cfg(feature)` or other `cfg` on a public item (docs/design/api.md, "Static
+# gates"). It renders the API with `cargo public-api` once per target and
+# feature set and diffs each against the first.
+#
+# One target per supported OS: a `cfg` that differs only by architecture, or
+# that holds on every target listed, is not observable here.
+set -euo pipefail
+
+toolchain="${EURIPOS_API_NIGHTLY:?set in mise.toml}"
+targets=(
+  x86_64-unknown-linux-gnu
+  aarch64-apple-darwin
+  aarch64-apple-ios
+  x86_64-pc-windows-msvc
+  aarch64-linux-android
+)
+feature_sets=("" "--no-default-features" "--all-features")
+
+out="${CARGO_TARGET_DIR:-target}/public-cfg"
+rm -rf "$out"
+mkdir -p "$out"
+
+rustup toolchain install "$toolchain" --profile minimal --no-self-update
+rustup target add --toolchain "$toolchain" "${targets[@]}"
+
+reference=""
+failed=0
+for target in "${targets[@]}"; do
+  for features in "${feature_sets[@]}"; do
+    name="$target${features:+ $features}"
+    file="$out/${target}${features//[- ]/_}.txt"
+    # shellcheck disable=SC2086 # `features` is one flag or none.
+    cargo "+$toolchain" public-api -p euripos --simplified --target "$target" $features > "$file"
+    if [ -z "$reference" ]; then
+      reference="$file"
+      reference_name="$name"
+    elif ! diff -u --label "$reference_name" --label "$name" "$reference" "$file"; then
+      echo "error: the public API on $name differs from $reference_name" >&2
+      failed=1
+    fi
+  done
+done
+
+if [ "$failed" -ne 0 ]; then
+  echo "error: a public item depends on cfg; see CONTRIBUTING.md, \"Code layout\"" >&2
+  exit 1
+fi
+echo "public API identical on ${#targets[@]} targets x ${#feature_sets[@]} feature sets"

@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Proves each static API gate rejects a seeded violation (docs/design/api.md,
+# "Static gates"). Each case copies the working tree, appends one violation to
+# the copy, runs the gate's own mise task there, and requires it to fail with
+# the message that names the violation. The working tree is never modified.
+set -euo pipefail
+
+root="$(pwd)"
+work="${CARGO_TARGET_DIR:-$root/target}/gate-selftest"
+rm -rf "$work"
+mkdir -p "$work"
+# One target directory for every copy, so dependencies build once.
+export CARGO_TARGET_DIR="$work/target"
+
+failed=0
+
+# copy NAME: a copy of the working tree (tracked and unignored files) at
+# $work/NAME, printed on stdout.
+copy() {
+  local dest="$work/$1"
+  mkdir -p "$dest"
+  git ls-files -z --cached --others --exclude-standard \
+    | tar --null --ignore-failed-read -T - -cf - \
+    | tar -xf - -C "$dest"
+  printf '%s\n' "$dest"
+}
+
+# seed DIR TEXT: append TEXT to the facade's lib.rs in DIR.
+seed() {
+  printf '%s\n' "$2" >> "$1/crates/euripos/src/lib.rs"
+}
+
+# expect_failure NAME PATTERN COMMAND...: COMMAND must fail and its output must
+# contain PATTERN, so a gate failing for an unrelated reason does not count.
+expect_failure() {
+  local name="$1" pattern="$2" log="$work/$1.log"
+  shift 2
+  if "$@" > "$log" 2>&1; then
+    echo "error: $name: the gate passed on a seeded violation (log: $log)" >&2
+    failed=1
+  elif ! grep -qF -- "$pattern" "$log"; then
+    echo "error: $name: the gate failed without reporting '$pattern' (log: $log)" >&2
+    tail -n 20 "$log" >&2
+    failed=1
+  else
+    echo "ok: $name rejects its seeded violation"
+  fi
+}
+
+# run_in DIR TASK [ARGS...]: run a mise task in a copy, which mise must trust.
+run_in() {
+  local dir="$1"
+  shift
+  MISE_TRUSTED_CONFIG_PATHS="$dir" mise --cd "$dir" run "$@"
+}
+
+item='
+/// Seeded violation.
+#[must_use]
+pub fn seeded() -> u8 {
+    1
+}'
+
+# clippy pedantic: a public function returning a value with no #[must_use]
+# trips `must_use_candidate`, which only the pedantic group enables.
+dir="$(copy clippy-pedantic)"
+seed "$dir" '
+/// Seeded violation.
+pub fn seeded() -> u8 {
+    1
+}'
+expect_failure clippy-pedantic "clippy::must-use-candidate" run_in "$dir" lint:clippy
+
+# public-api snapshot: a new public item the snapshot does not hold.
+dir="$(copy public-api-snapshot)"
+seed "$dir" "$item"
+expect_failure public-api-snapshot "+pub fn euripos::seeded() -> u8" run_in "$dir" api:check
+
+# cfg on a public item: present on Linux only.
+dir="$(copy public-cfg-target)"
+seed "$dir" "
+#[cfg(target_os = \"linux\")]$item"
+expect_failure public-cfg-target "-pub fn euripos::seeded() -> u8" run_in "$dir" api:cfg
+
+# cfg(feature) on a public item: present with one feature only.
+dir="$(copy public-cfg-feature)"
+printf '\n[features]\nseeded = []\n' >> "$dir/crates/euripos/Cargo.toml"
+seed "$dir" "
+#[cfg(feature = \"seeded\")]$item"
+expect_failure public-cfg-feature "+pub fn euripos::seeded() -> u8" run_in "$dir" api:cfg
+
+# cargo-semver-checks: the working tree is checked against a baseline that has
+# one more public function, so the tree has removed it.
+dir="$(copy semver-baseline)"
+seed "$dir" "$item"
+expect_failure semver-checks "function_missing" mise run api:semver "$dir"
+
+if [ "$failed" -ne 0 ]; then
+  exit 1
+fi
+echo "every gate rejects its seeded violation"
