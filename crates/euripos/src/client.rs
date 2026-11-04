@@ -328,6 +328,19 @@ mod tests {
             assert_eq!(server.accepted.load(Ordering::SeqCst), 1);
         }
 
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn concurrent_first_requests_to_an_h2_origin_all_succeed() {
+            let server = server(&[b"h2", b"http/1.1"]).await;
+            let client = client(&server);
+            let concurrent = futures_join(&client, &server).await;
+            assert!(
+                concurrent
+                    .iter()
+                    .all(|got| *got == (Version::HTTP_2, "hello".into())),
+                "{concurrent:?}"
+            );
+        }
+
         #[tokio::test]
         async fn without_alpn_h2_the_client_falls_back_to_http1_and_reuses_it() {
             let server = server(&[b"http/1.1"]).await;
