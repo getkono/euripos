@@ -1,6 +1,6 @@
 # Public API
 
-The public API of the `euripos` crate, and the static gates that keep it idiomatic and platform-agnostic. `docs/scope.md` Principle 1 (no `cfg` on a public item), Principle 3 (every knob names its evidence) and Principle 4 (Unknown is not a default) bind every section. The crate ships this API as signatures before the transport exists: `Client::send` panics until the baseline client (#3) lands behind it, and the snapshot in `crates/euripos/tests/public-api/euripos.txt` is the contract that transport meets.
+The public API of the `euripos` crate, and the static gates that keep it idiomatic and platform-agnostic. `docs/scope.md` Principle 1 (no `cfg` on a public item), Principle 3 (every knob names its evidence) and Principle 4 (Unknown is not a default) bind every section. The baseline client ([docs/baseline.md](../baseline.md)) implements it, and the snapshot in `crates/euripos/tests/public-api/euripos.txt` is the contract every later transport meets.
 
 ## Client and builder
 
@@ -170,7 +170,7 @@ Every knob is API surface to keep and a default a caller may get wrong. Scope Pr
 
 ### Choice
 
-1. `connect_timeout`, `tls_timeout`, `total_timeout` and `read_stall_timeout`, each taking a `Duration`. None can be turned off. The default values are named constants set by the baseline client (#3): connect 10 s, TLS 10 s, total 30 s, per-read stall 30 s.
+1. `connect_timeout`, `tls_timeout`, `total_timeout` and `read_stall_timeout`, each taking a `Duration`. None can be turned off. The default values are named constants set by the baseline client: connect 10 s, TLS 10 s, total 30 s, per-read stall 30 s ([docs/baseline.md](../baseline.md), "Default timeouts").
 
 | Knob | Evidence |
 |---|---|
@@ -185,7 +185,7 @@ Each of the four bounds a distinct failure the scope names, and each has a remed
 
 ### Validated by
 
-The builder test here; each timeout's behaviour is tested on loopback with #3.
+The builder test here; each timeout fires on loopback in `crates/euripos/tests/timeouts.rs`.
 
 ## Static gates
 
