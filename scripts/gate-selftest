@@ -19,8 +19,12 @@ failed=0
 copy() {
   local dest="$work/$1"
   mkdir -p "$dest"
+  # A tracked file deleted in the working tree is left out.
   git ls-files -z --cached --others --exclude-standard \
-    | tar --null --ignore-failed-read -T - -cf - \
+    | while IFS= read -r -d '' file; do
+        if [ -e "$file" ]; then printf '%s\0' "$file"; fi
+      done \
+    | tar --null -T - -cf - \
     | tar -xf - -C "$dest"
   printf '%s\n' "$dest"
 }
