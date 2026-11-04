@@ -62,27 +62,19 @@ file_of() {
   printf '%s%s.txt\n' "$1" "${2//[- ]/_}"
 }
 
-# android_toolchain: point the `cc` crate at the Android NDK's clang and ar, so
-# build scripts that compile C build for Android. Without an NDK, a dependency
-# with C fails to render for Android.
+# android_toolchain TARGET: export the Android C toolchain for TARGET at the API
+# floor, as every other Android build here gets it from `cargo ndk --platform`,
+# so build scripts that compile C build for Android. `cargo ndk` itself cannot
+# wrap `cargo public-api`: it appends `--message-format`, which `cargo
+# public-api` rejects, so this takes the same environment from `cargo ndk-env`.
+# Without an NDK, a dependency with C fails to render for Android.
 android_toolchain() {
-  local api="${EURIPOS_ANDROID_API:?set in mise.toml}"
-  local ndk="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_ROOT:-}}}"
-  if [ -z "$ndk" ] && [ -d "${ANDROID_HOME:-}/ndk" ]; then
-    ndk="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
-  fi
-  if [ -z "$ndk" ]; then
-    echo "warning: no Android NDK (set ANDROID_NDK_HOME); android renders only while no dependency compiles C" >&2
+  local api="${EURIPOS_ANDROID_API:?set in mise.toml}" env
+  if ! env="$(cargo ndk-env --platform "$api" -t "$1")"; then
+    echo "warning: no Android toolchain from cargo ndk-env (set ANDROID_NDK_HOME); android renders only while no dependency compiles C" >&2
     return 0
   fi
-  local bin
-  bin="$(find "$ndk/toolchains/llvm/prebuilt" -mindepth 2 -maxdepth 2 -type d -name bin | head -n 1)"
-  if [ -z "$bin" ]; then
-    echo "error: $ndk holds no toolchains/llvm/prebuilt/*/bin" >&2
-    return 1
-  fi
-  export CC_aarch64_linux_android="${CC_aarch64_linux_android:-$bin/aarch64-linux-android$api-clang}"
-  export AR_aarch64_linux_android="${AR_aarch64_linux_android:-$bin/llvm-ar}"
+  eval "$env"
 }
 
 # render: render each of this host's OSes and feature sets into $out.
@@ -96,13 +88,17 @@ render() {
   for os in $hosts; do
     target="$(target_of "$os")"
     rustup target add --toolchain "$toolchain" "$target"
-    if [ "$os" = android ]; then android_toolchain; fi
-    for features in "${feature_sets[@]}"; do
-      echo "rendering $os ($target)${features:+ $features}" >&2
-      # shellcheck disable=SC2086 # `features` is one flag or none.
-      cargo "+$toolchain" public-api -p euripos --simplified --target "$target" $features \
-        > "$out/$(file_of "$os" "$features")"
-    done
+    # A subshell, so the toolchain one OS exports (`cargo ndk-env` sets an
+    # unsuffixed `CC` and `CXX`) never reaches another OS's render.
+    (
+      if [ "$os" = android ]; then android_toolchain "$target"; fi
+      for features in "${feature_sets[@]}"; do
+        echo "rendering $os ($target)${features:+ $features}" >&2
+        # shellcheck disable=SC2086 # `features` is one flag or none.
+        cargo "+$toolchain" public-api -p euripos --simplified --target "$target" $features \
+          > "$out/$(file_of "$os" "$features")"
+      done
+    )
   done
 }
 

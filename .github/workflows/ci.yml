@@ -35,7 +35,8 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          install_args: cargo-binstall cargo-deny cargo:cargo-public-api
+          # cargo-ndk: `api:cfg` takes Android's C toolchain from `cargo ndk-env`.
+          install_args: cargo-binstall cargo-deny cargo:cargo-public-api cargo:cargo-ndk
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: mise run check
@@ -70,16 +71,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, host: linux }
-          - { os: macos-15, host: macos }
-          - { os: windows-2025, host: windows }
+          # cargo-ndk on Linux: Android's C toolchain comes from `cargo ndk-env`.
+          - { os: ubuntu-24.04, host: linux, tools: cargo:cargo-ndk }
+          - { os: macos-15, host: macos, tools: "" }
+          - { os: windows-2025, host: windows, tools: "" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          install_args: cargo-binstall cargo:cargo-public-api
+          install_args: cargo-binstall cargo:cargo-public-api ${{ matrix.tools }}
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: mise run api:cfg:render
@@ -117,7 +119,7 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          install_args: cargo-binstall cargo:cargo-public-api github:obi1kenobi/cargo-semver-checks
+          install_args: cargo-binstall cargo:cargo-public-api cargo:cargo-ndk github:obi1kenobi/cargo-semver-checks
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: mise run gates:selftest
