@@ -11,7 +11,7 @@ jobs:
   # (release_always = false). Nothing is published to crates.io (git_only).
   release:
     name: release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.repository_owner == 'getkono'
     permissions:
       contents: write
@@ -31,7 +31,7 @@ jobs:
   # Opens or updates the release pull request: version bump and CHANGELOG.
   release-pr:
     name: release-pr
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.repository_owner == 'getkono'
     permissions:
       contents: write
