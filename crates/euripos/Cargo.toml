@@ -44,3 +44,8 @@ serde_json = "1"
 socket2 = "0.6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "net", "time", "test-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+
+[[example]]
+name = "baseline"
+# Its argument parsing and statistics have unit tests.
+test = true
