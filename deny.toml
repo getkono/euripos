@@ -187,9 +187,10 @@ allow = [
 allow-workspace = false
 # List of crates to deny
 #
-# euripos: one crypto provider in the dependency graph, ring (docs/scope.md,
-# binary size), and tokio as the only runtime. Admitting a second provider
-# moves it from this list in the change that adds its feature.
+# euripos: one crypto provider in the dependency graph, ring
+# (docs/adr/0001-crypto-provider.md), and tokio as the only runtime. Admitting
+# a second provider moves it from this list, and from the `bans.features`
+# entries below, in the change that adds its `crypto-*` feature.
 deny = [
     { crate = "aws-lc-rs", reason = "ring is the only crypto provider" },
     { crate = "aws-lc-sys", reason = "ring is the only crypto provider" },
@@ -246,6 +247,31 @@ skip-tree = [
     #"ansi_term@0.11.0", # will be skipped along with _all_ of its direct and transitive dependencies
     #{ crate = "ansi_term@0.11.0", depth = 20 },
 ]
+
+# euripos: the features of the TLS and QUIC crates that pull in a provider other
+# than ring (docs/adr/0001-crypto-provider.md). The crate bans above catch the
+# provider itself; these name the feature that brought it in. Each of these
+# crates enables aws-lc-rs by default, so it is depended on with
+# `default-features = false`.
+[[bans.features]]
+crate = "rustls"
+deny = ["aws_lc_rs", "aws-lc-rs", "fips", "prefer-post-quantum"]
+
+[[bans.features]]
+crate = "tokio-rustls"
+deny = ["aws_lc_rs", "aws-lc-rs", "fips"]
+
+[[bans.features]]
+crate = "hyper-rustls"
+deny = ["aws-lc-rs", "fips"]
+
+[[bans.features]]
+crate = "quinn"
+deny = ["aws-lc-rs", "aws-lc-rs-fips", "rustls-aws-lc-rs", "rustls-aws-lc-rs-fips"]
+
+[[bans.features]]
+crate = "quinn-proto"
+deny = ["aws-lc-rs", "aws-lc-rs-fips", "rustls-aws-lc-rs", "rustls-aws-lc-rs-fips"]
 
 # This section is considered when running `cargo deny check sources`.
 # More documentation about the 'sources' section can be found here:
