@@ -60,6 +60,53 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: mise run api:semver "$BASE_SHA"
 
+  # The public API rendered for each supported OS on a host with that OS's C
+  # toolchain: Linux renders Linux and Android (with the runner's NDK), macOS
+  # renders macOS and iOS, and Windows renders Windows.
+  api-cfg-render:
+    name: api-cfg-render (${{ matrix.host }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, host: linux }
+          - { os: macos-15, host: macos }
+          - { os: windows-2025, host: windows }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          install_args: cargo-binstall cargo:cargo-public-api
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: mise run api:cfg:render
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: public-cfg-${{ matrix.host }}
+          path: target/public-cfg/
+          if-no-files-found: error
+
+  # Every OS's render, from every host, identical across OSes and feature sets.
+  api-cfg:
+    name: api-cfg
+    needs: api-cfg-render
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          install: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: public-cfg-*
+          path: public-cfg
+      - run: mise run api:cfg:diff public-cfg
+
   # Each static API gate, and clippy pedantic, rejects a seeded violation.
   gates:
     name: gates

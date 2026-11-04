@@ -67,6 +67,8 @@ depends = ["api:check", "api:cfg"]
 # here and every API task depends on it.
 [tasks."api:toolchain"]
 description = "Install the nightly that `cargo public-api` reads rustdoc JSON from"
+# bash on Windows too, where the default shell does not expand `$VAR`.
+shell = "bash -c"
 run = 'rustup toolchain install "$EURIPOS_API_NIGHTLY" --profile minimal --no-self-update'
 
 [tasks."api:check"]
@@ -94,10 +96,26 @@ set -euo pipefail
 cargo "+$EURIPOS_API_NIGHTLY" public-api -p euripos --simplified > crates/euripos/tests/public-api/euripos.txt
 '''
 
+# Rendering a target runs its dependencies' C builds, so each OS renders on the
+# host with its toolchain: `api:cfg` diffs this host's OSes, and CI's `api-cfg`
+# job diffs every host's `api:cfg:render` with `api:cfg:diff`.
 [tasks."api:cfg"]
-description = "Fail when the public API differs between platforms or feature sets"
+description = "Fail when the public API differs between this host's platforms or feature sets"
 depends = ["api:toolchain"]
+shell = "bash -c"
 run = "scripts/lint-public-cfg"
+
+[tasks."api:cfg:render"]
+description = "Render the public API for this host's platforms and every feature set"
+depends = ["api:toolchain"]
+shell = "bash -c"
+run = "scripts/lint-public-cfg render"
+
+[tasks."api:cfg:diff"]
+description = "Fail when the renders under a directory differ, or miss a platform or feature set"
+usage = 'arg "<dir>" help="A directory holding the api:cfg:render output of every host"'
+shell = "bash -c"
+run = 'scripts/lint-public-cfg diff "${usage_dir?}"'
 
 [tasks."api:semver"]
 description = "cargo-semver-checks against a base revision or a baseline directory"

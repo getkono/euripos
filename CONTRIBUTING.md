@@ -22,7 +22,7 @@ mise is the task interface. CI runs these same tasks, so a green `mise run check
 | `mise run api` | `api:check` and `api:cfg` |
 | `mise run api:check` | The facade crate's public API through `cargo public-api` (pinned nightly), diffed against `crates/euripos/tests/public-api/euripos.txt` |
 | `mise run api:bless` | Rewrites that snapshot; commit it with the change that alters the API |
-| `mise run api:cfg` | Fails when the public API differs between the supported platforms or feature sets |
+| `mise run api:cfg` | Fails when the public API differs between the platforms this host renders (Linux and Android, with an NDK, on Linux; macOS and iOS on macOS; Windows on Windows) or between feature sets; CI's `api-cfg` job diffs every platform (`api:cfg:render`, `api:cfg:diff DIR`) |
 | `mise run api:semver [base]` | `cargo-semver-checks` against `base` (default `origin/main`); breaking only where a commit declares it |
 | `mise run gates:selftest` | Proves each API gate and clippy pedantic reject a seeded violation |
 | `mise run msrv` | `cargo check` on the declared `rust-version` |

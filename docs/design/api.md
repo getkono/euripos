@@ -213,7 +213,7 @@ For the `cfg` lint:
 | clippy pedantic, warnings denied | `lint:clippy` | `check` | a public `fn -> u8` without `#[must_use]` (`must_use_candidate`, pedantic only) |
 | rustdoc, warnings denied | `docs:check` | `check` | (rustc's own `-D warnings`) |
 | Public API snapshot | `api:check`; `api:bless` rewrites it | `check` | a new public function |
-| No `cfg` on a public item | `api:cfg` (`scripts/lint-public-cfg`) | `check` | a public function behind `cfg(target_os = "linux")`, and one behind `cfg(feature)` |
+| No `cfg` on a public item | `api:cfg` (`scripts/lint-public-cfg`) for this host's OSes; `api:cfg:render` per host, then `api:cfg:diff` for every OS | `check`; `api-cfg-render` and `api-cfg` | a public function behind `cfg(target_os = "linux")`, and one behind `cfg(feature)`; across hosts, an iOS render with one more public function, and a missing Windows render |
 | cargo-semver-checks | `api:semver [base]` | `semver` | a baseline with one more public function (`function_missing`) |
 
 `api:semver` checks the change as the largest non-breaking release (patch before 1.0, minor after) unless a commit since the base declares a breaking change (`type!:` or a `BREAKING CHANGE:` footer), when it checks it as major. release-plz runs cargo-semver-checks again on the release pull request. `gates:selftest` copies the working tree for each case, appends the violation to the copy, runs the gate's own task there, and requires it to fail with the message naming the violation; it runs in the `gates` CI job.
@@ -225,6 +225,23 @@ Option 1 checks what the principle is about, a caller seeing a different API on 
 ### Validated by
 
 The `gates` CI job (`mise run gates:selftest`), and `mise run check` passing on the unseeded tree.
+
+### Where each OS renders
+
+**Problem.** Rendering a target runs every dependency's build script for it. Once ring is in the graph (the `crypto-ring` feature, #17), its build script compiles C and assembly for the target, and a Linux host with no cross toolchain fails it for macOS, iOS, Windows and Android (#29).
+
+**Constraints.** One render per supported OS and per feature set, all identical, and `gates:selftest` still proves the lint rejects a seeded `cfg`. Apple SDKs exist only on macOS, and MSVC only on Windows.
+
+**Alternatives.**
+1. Render each OS on a host that has its C toolchain (Linux and Android on Linux with the NDK, macOS and iOS on macOS, Windows on Windows), and diff every host's renders in one job.
+2. Render every OS from Linux with cross toolchains: the NDK for Android, `cargo-xwin` for MSVC, osxcross and an Apple SDK for macOS and iOS.
+3. Keep rendering from Linux and stop C build scripts from running for rustdoc: no cargo mechanism does this for a dependency.
+
+**Choice.** Option 1. `scripts/lint-public-cfg render` renders the OSes its host owns into `target/public-cfg/` (Linux and Windows for the host's own triple, Android for `aarch64-linux-android` with `CC_`/`AR_` pointed at the NDK found through `ANDROID_NDK_HOME`, `ANDROID_NDK_LATEST_HOME`, `ANDROID_NDK_ROOT` or `$ANDROID_HOME/ndk`). `scripts/lint-public-cfg diff DIR` requires exactly one render of each of the five OSes and three feature sets under `DIR` and diffs each against Linux's default render. CI's `api-cfg-render` job runs `api:cfg:render` on `ubuntu-24.04`, `macos-15` and `windows-2025` and uploads each host's renders; `api-cfg` downloads them all and runs `api:cfg:diff`. Locally, and in `check`, `api:cfg` renders and diffs the host's own OSes, so a Linux checkout still diffs two OSes and every feature set.
+
+**Rationale.** Option 1 needs only what the hosted runners already ship (Xcode, MSVC, the Android NDK), the same toolchains the `test`, `ios`, `android` and `size` jobs build with. Option 2 needs an Apple SDK on Linux, which Apple's licence does not allow off Apple hardware, and a downloaded MSVC CRT. The cost is that a local run sees only its host's OSes, and a Linux checkout without an NDK renders Android only while no dependency compiles C; CI's diff is the complete check.
+
+**Validated by.** `gates:selftest` seeds `cfg(target_os = "linux")` and `cfg(feature)` through `api:cfg` on Linux (Linux against Android), and gives `api:cfg:diff` a fabricated set of every host's renders in which iOS has one more public function, and one in which Windows' `--all-features` render is missing. The `api-cfg` CI job diffs the real renders of all three hosts.
 
 ## Rust API Guidelines checklist
 

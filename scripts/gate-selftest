@@ -2,7 +2,8 @@
 # Proves each static API gate rejects a seeded violation (docs/design/api.md,
 # "Static gates"). Each case copies the working tree, appends one violation to
 # the copy, runs the gate's own mise task there, and requires it to fail with
-# the message that names the violation. The working tree is never modified.
+# the message that names the violation; the cross-host cfg diff is given
+# fabricated renders instead. The working tree is never modified.
 set -euo pipefail
 
 root="$(pwd)"
@@ -92,6 +93,35 @@ printf '\n[features]\nseeded = []\n' >> "$dir/crates/euripos/Cargo.toml"
 seed "$dir" "
 #[cfg(feature = \"seeded\")]$item"
 expect_failure public-cfg-feature "+pub fn euripos::seeded() -> u8" run_in "$dir" api:cfg
+
+# renders NAME: api:cfg:render output for every supported OS and feature set
+# at $work/NAME, one directory per rendering host as CI downloads them, every
+# render identical; printed on stdout.
+renders() {
+  local dest="$work/$1" host os features
+  for host in "linux:linux android" "macos:macos ios" "windows:windows"; do
+    mkdir -p "$dest/${host%%:*}"
+    for os in ${host#*:}; do
+      for features in "" __no_default_features __all_features; do
+        printf 'pub fn euripos::Client::new() -> euripos::Client\n' \
+          > "$dest/${host%%:*}/$os$features.txt"
+      done
+    done
+  done
+  printf '%s\n' "$dest"
+}
+
+# The cross-host diff: one OS's render (here iOS, rendered on macOS) has a
+# public item the others lack.
+dir="$(renders public-cfg-hosts-differ)"
+printf 'pub fn euripos::seeded() -> u8\n' >> "$dir/macos/ios.txt"
+expect_failure public-cfg-hosts-differ "+pub fn euripos::seeded() -> u8" mise run api:cfg:diff "$dir"
+
+# The cross-host diff: a host's render is missing, so one OS and feature set
+# went unchecked.
+dir="$(renders public-cfg-hosts-missing)"
+rm "$dir/windows/windows__all_features.txt"
+expect_failure public-cfg-hosts-missing "0 renders of windows --all-features" mise run api:cfg:diff "$dir"
 
 # cargo-semver-checks: the working tree is checked against a baseline that has
 # one more public function, so the tree has removed it.
