@@ -33,7 +33,8 @@ jobs:
   commits:
     name: commits
     runs-on: ubuntu-24.04
-    if: github.event.action != 'edited'
+    # Runs on `edited` too: an edit cancels the run in flight for the same
+    # head, and a skipped job would report that head as passing.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
