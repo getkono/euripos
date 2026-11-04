@@ -89,7 +89,15 @@ expect_failure public-cfg-target "-pub fn euripos::seeded() -> u8" run_in "$dir"
 
 # cfg(feature) on a public item: present with one feature only.
 dir="$(copy public-cfg-feature)"
-printf '\n[features]\nseeded = []\n' >> "$dir/crates/euripos/Cargo.toml"
+# The feature goes into the manifest's [features] table, which is added only
+# where the manifest has none: TOML rejects a second [features] header.
+manifest="$dir/crates/euripos/Cargo.toml"
+if grep -qx '\[features\]' "$manifest"; then
+  awk '{ print } $0 == "[features]" { print "seeded = []" }' "$manifest" > "$manifest.seeded"
+  mv "$manifest.seeded" "$manifest"
+else
+  printf '\n[features]\nseeded = []\n' >> "$manifest"
+fi
 seed "$dir" "
 #[cfg(feature = \"seeded\")]$item"
 expect_failure public-cfg-feature "+pub fn euripos::seeded() -> u8" run_in "$dir" api:cfg

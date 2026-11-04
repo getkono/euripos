@@ -1,0 +1,83 @@
+name: size-budget
+
+# The stripped size of the minimal client on every supported target, against
+# a budget per target (docs/adr/0001-crypto-provider.md, "Binary-size budget").
+# Each budget is the size first measured plus 10%, rounded up. Raising one
+# needs a commit whose message says what grew, by how much and why; the new
+# budget is the new measured size plus 10%, and `measured` moves with it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: size-budget-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  size:
+    name: size (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # measured: stripped bytes when the budget was set; budget: the limit.
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, measured: 331960, budget: 365157 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, measured: 332640, budget: 365905 }
+          - { os: macos-15, target: aarch64-apple-darwin, measured: 342096, budget: 376306 }
+          - { os: macos-15, target: aarch64-apple-ios, measured: 322432, budget: 354676 }
+          - { os: macos-15, target: aarch64-apple-ios-sim, measured: 325088, budget: 357597 }
+          - { os: windows-2025, target: x86_64-pc-windows-msvc, measured: 123904, budget: 136295 }
+          - { os: windows-11-arm, target: aarch64-pc-windows-msvc, measured: 123904, budget: 136295 }
+          - { os: ubuntu-24.04, target: aarch64-linux-android, measured: 314800, budget: 346280 }
+          - { os: ubuntu-24.04, target: x86_64-linux-android, measured: 340424, budget: 374467 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          install: ${{ contains(matrix.target, 'android') }}
+          install_args: cargo-binstall cargo:cargo-ndk
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: size-${{ matrix.target }}
+      - name: Stripped size within budget
+        env:
+          TARGET: ${{ matrix.target }}
+          MEASURED: ${{ matrix.measured }}
+          BUDGET: ${{ matrix.budget }}
+        run: |
+          set -euo pipefail
+          printf '| target | stripped bytes |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          out="$(mise run size "$TARGET")"
+          printf '%s\n' "$out"
+          bytes="$(printf '%s\n' "$out" | grep -oE "$TARGET: [0-9]+ bytes stripped" | grep -oE '[0-9]+ bytes' | grep -oE '[0-9]+')"
+          if [ -z "$bytes" ]; then
+            echo "::error title=size budget::mise run size reported no size for $TARGET"
+            exit 1
+          fi
+          line="$TARGET: $bytes bytes stripped; budget $BUDGET ($(( bytes * 100 / BUDGET ))% used), measured $MEASURED when it was set"
+          echo "$line"
+          printf '\n%s\n' "$line" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$bytes" -gt "$BUDGET" ]; then
+            echo "::error title=size budget::$TARGET is $bytes bytes stripped, over its budget of $BUDGET bytes. Shrink the change, or raise the budget in .github/workflows/size-budget.yml in a commit that says what grew and why (docs/adr/0001-crypto-provider.md)."
+            exit 1
+          fi
