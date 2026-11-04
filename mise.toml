@@ -62,12 +62,19 @@ run = "cargo doc --workspace --no-deps --locked"
 description = "Every public API gate that needs no base: the snapshot and the cfg lint"
 depends = ["api:check", "api:cfg"]
 
+# The API tasks run in parallel under `check`; two rustup installs of the same
+# toolchain at once race on rustup's download directory, so it is installed once
+# here and every API task depends on it.
+[tasks."api:toolchain"]
+description = "Install the nightly that `cargo public-api` reads rustdoc JSON from"
+run = 'rustup toolchain install "$EURIPOS_API_NIGHTLY" --profile minimal --no-self-update'
+
 [tasks."api:check"]
 description = "Fail when the facade's public API differs from its committed snapshot"
+depends = ["api:toolchain"]
 shell = "bash -c"
 run = '''
 set -euo pipefail
-rustup toolchain install "$EURIPOS_API_NIGHTLY" --profile minimal --no-self-update
 out="${CARGO_TARGET_DIR:-target}/public-api"
 mkdir -p "$out"
 cargo "+$EURIPOS_API_NIGHTLY" public-api -p euripos --simplified > "$out/euripos.txt"
@@ -80,15 +87,16 @@ fi
 
 [tasks."api:bless"]
 description = "Rewrite the public API snapshot from the current tree"
+depends = ["api:toolchain"]
 shell = "bash -c"
 run = '''
 set -euo pipefail
-rustup toolchain install "$EURIPOS_API_NIGHTLY" --profile minimal --no-self-update
 cargo "+$EURIPOS_API_NIGHTLY" public-api -p euripos --simplified > crates/euripos/tests/public-api/euripos.txt
 '''
 
 [tasks."api:cfg"]
 description = "Fail when the public API differs between platforms or feature sets"
+depends = ["api:toolchain"]
 run = "scripts/lint-public-cfg"
 
 [tasks."api:semver"]
