@@ -35,6 +35,7 @@ mod body;
 mod client;
 mod error;
 mod facts;
+mod marker;
 
 pub use body::Body;
 pub use client::{Client, ClientBuilder};

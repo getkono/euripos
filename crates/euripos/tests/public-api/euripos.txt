@@ -152,8 +152,8 @@ impl core::marker::Send for euripos::Body
 impl core::marker::Sync for euripos::Body
 impl core::marker::Unpin for euripos::Body
 impl core::marker::UnsafeUnpin for euripos::Body
-impl core::panic::unwind_safe::RefUnwindSafe for euripos::Body
-impl core::panic::unwind_safe::UnwindSafe for euripos::Body
+impl !core::panic::unwind_safe::RefUnwindSafe for euripos::Body
+impl !core::panic::unwind_safe::UnwindSafe for euripos::Body
 pub struct euripos::Client
 impl euripos::Client
 pub fn euripos::Client::builder() -> euripos::ClientBuilder
@@ -171,8 +171,8 @@ impl core::marker::Send for euripos::Client
 impl core::marker::Sync for euripos::Client
 impl core::marker::Unpin for euripos::Client
 impl core::marker::UnsafeUnpin for euripos::Client
-impl core::panic::unwind_safe::RefUnwindSafe for euripos::Client
-impl core::panic::unwind_safe::UnwindSafe for euripos::Client
+impl !core::panic::unwind_safe::RefUnwindSafe for euripos::Client
+impl !core::panic::unwind_safe::UnwindSafe for euripos::Client
 pub struct euripos::ClientBuilder
 impl euripos::ClientBuilder
 pub fn euripos::ClientBuilder::build(self) -> euripos::Client

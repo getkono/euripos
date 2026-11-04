@@ -22,11 +22,11 @@ Callers need one handle to send requests through, shared across tasks, and a way
 
 ### Choice
 
-1. `Client::new()` and `Default` give the defaults; `Client::builder()` and `ClientBuilder::new()` start a builder whose setters take and return `self`, and `build(self) -> Client`. `Client` is `Clone + Debug + Send + Sync`; clones share connections. `Client::send` takes `&self`, so one client serves many concurrent requests.
+1. `Client::new()` and `Default` give the defaults; `Client::builder()` and `ClientBuilder::new()` start a builder whose setters take and return `self`, and `build(self) -> Client`. `Client` is `Clone + Debug + Send + Sync`; clones share connections. `Client` is neither `UnwindSafe` nor `RefUnwindSafe`. `Client::send` takes `&self`, so one client serves many concurrent requests.
 
 ### Rationale
 
-Every current setting is a finite `Duration` that cannot be invalid, so nothing can fail at build time. Platform work that can fail (trust store initialisation on Android, network monitors) is initialised lazily and reports through the first request's `Error`, so the caller handles one failure path instead of two. Option 2 adds an error path no setting can reach; option 3 hides shared state and cannot be configured per use. Changing `build` to return a `Result` later is a breaking change, recorded in the pull request that adds this API.
+Every current setting is a finite `Duration` that cannot be invalid, so nothing can fail at build time. Platform work that can fail (trust store initialisation on Android, network monitors) is initialised lazily and reports through the first request's `Error`, so the caller handles one failure path instead of two. Option 2 adds an error path no setting can reach; option 3 hides shared state and cannot be configured per use. Changing `build` to return a `Result` later is a breaking change, recorded in the pull request that adds this API. `Client` opts out of `UnwindSafe` and `RefUnwindSafe` through a private marker field: the pooled hyper-util client the transport (#3) puts behind it holds shared state that is neither, and removing an auto trait when it lands would be a breaking change, while adding the traits back later is not.
 
 ### Validated by
 
@@ -52,11 +52,11 @@ Requests and responses need a representation that interoperates with the rest of
 
 ### Choice
 
-1. `Client::send<B: Into<Body>>(&self, Request<B>) -> impl Future<Output = Result<Response<Body>, Error>> + Send + 'static`. `Body` implements `http_body::Body<Data = Bytes, Error = euripos::Error>`, is `Send + Sync + Unpin`, and converts from `Bytes`, `Vec<u8>`, `&'static [u8]`, `String`, `&'static str` and `()`; `Body::empty()` and `Default` give an empty body.
+1. `Client::send<B: Into<Body>>(&self, Request<B>) -> impl Future<Output = Result<Response<Body>, Error>> + Send + 'static`. `Body` implements `http_body::Body<Data = Bytes, Error = euripos::Error>`, is `Send + Sync + Unpin` but neither `UnwindSafe` nor `RefUnwindSafe`, and converts from `Bytes`, `Vec<u8>`, `&'static [u8]`, `String`, `&'static str` and `()`; `Body::empty()` and `Default` give an empty body.
 
 ### Rationale
 
-The `http` types are what hyper speaks, so no conversion sits on the hot path and callers reuse what they know. Re-exporting `http` makes its major version part of euripos's API, which it already is through `send`'s signature; the re-export lets callers write `euripos::http::Request` without a matching dependency. `Into<Body>` keeps the request side simple (`Request::get(uri).body(())`) and keeps `http_body`'s generic bounds out of the signature. A streaming request body is a later constructor on `Body` (for example `Body::wrap(impl http_body::Body)`), which is additive. Option 2 duplicates `http`; option 3 exposes `http_body`'s trait bounds and error conversion in every call. The future is `Send + 'static` so it can be spawned, which commits the transport to owning what it needs. Convenience builders (`client.get(url)`) are reqwest parity, decided with #8.
+The `http` types are what hyper speaks, so no conversion sits on the hot path and callers reuse what they know. Re-exporting `http` makes its major version part of euripos's API, which it already is through `send`'s signature; the re-export lets callers write `euripos::http::Request` without a matching dependency. `Into<Body>` keeps the request side simple (`Request::get(uri).body(())`) and keeps `http_body`'s generic bounds out of the signature. A streaming request body is a later constructor on `Body` (for example `Body::wrap(impl http_body::Body)`), which is additive. Option 2 duplicates `http`; option 3 exposes `http_body`'s trait bounds and error conversion in every call. The future is `Send + 'static` so it can be spawned, which commits the transport to owning what it needs. Convenience builders (`client.get(url)`) are reqwest parity, decided with #8. `Body` opts out of `UnwindSafe` and `RefUnwindSafe` through a private marker field, for the same reason as `Client`: hyper's `Incoming`, which the transport (#3) puts behind it, is neither, and removing an auto trait then would be breaking.
 
 ### Validated by
 

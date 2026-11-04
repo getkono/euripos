@@ -1,10 +1,12 @@
 //! The client and its builder.
 
+use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
 use http::{Request, Response};
 
+use crate::marker::NotUnwindSafe;
 use crate::{Body, Error, NetworkFacts};
 
 /// An HTTP client.
@@ -12,9 +14,18 @@ use crate::{Body, Error, NetworkFacts};
 /// Build one with [`Client::new`] for the defaults or [`Client::builder`] to
 /// change a timeout. A `Client` is cheap to clone and is meant to be shared:
 /// clones use the same connections.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Client {
     timeouts: Timeouts,
+    _unwind: NotUnwindSafe,
+}
+
+impl fmt::Debug for Client {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Client")
+            .field("timeouts", &self.timeouts)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Client {
@@ -125,6 +136,7 @@ impl ClientBuilder {
     pub fn build(self) -> Client {
         Client {
             timeouts: self.timeouts,
+            _unwind: NotUnwindSafe::default(),
         }
     }
 }

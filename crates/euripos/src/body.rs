@@ -8,6 +8,7 @@ use bytes::Bytes;
 use http_body::{Frame, SizeHint};
 
 use crate::Error;
+use crate::marker::NotUnwindSafe;
 
 /// A request or response body: a stream of [`Bytes`] frames that implements
 /// [`http_body::Body`].
@@ -16,6 +17,7 @@ use crate::Error;
 /// [`Body::empty`].
 pub struct Body {
     inner: Inner,
+    _unwind: NotUnwindSafe,
 }
 
 enum Inner {
@@ -29,6 +31,7 @@ impl Body {
     pub fn empty() -> Self {
         Self {
             inner: Inner::Full(None),
+            _unwind: NotUnwindSafe::default(),
         }
     }
 }
@@ -44,7 +47,7 @@ impl fmt::Debug for Body {
         let Inner::Full(bytes) = &self.inner;
         f.debug_struct("Body")
             .field("remaining", &bytes.as_ref().map_or(0, Bytes::len))
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -52,6 +55,7 @@ impl From<Bytes> for Body {
     fn from(bytes: Bytes) -> Self {
         Self {
             inner: Inner::Full((!bytes.is_empty()).then_some(bytes)),
+            _unwind: NotUnwindSafe::default(),
         }
     }
 }
