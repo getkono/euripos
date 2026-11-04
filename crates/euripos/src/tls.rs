@@ -86,6 +86,12 @@ fn provider() -> Result<Arc<CryptoProvider>, Error> {
 /// A configuration that verifies servers with the platform verifier and offers
 /// [`ALPN`].
 fn platform_config() -> Result<ClientConfig, Error> {
+    platform_config_where(Ok(()))
+}
+
+/// [`platform_config`], where `verifier` is what the platform reports about
+/// its verifier.
+fn platform_config_where(_verifier: Result<(), &'static str>) -> Result<ClientConfig, Error> {
     let provider = provider()?;
     let verifier = rustls_platform_verifier::Verifier::new(provider.clone())
         .map_err(|error| Error::with_source(ErrorKind::Tls, error))?;
@@ -111,8 +117,20 @@ pub(crate) fn negotiated_h2(stream: &TlsStream<TcpStream>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ALPN, with_alpn};
+    use super::{ALPN, platform_config_where, with_alpn};
+    use crate::ErrorKind;
     use std::sync::Arc;
+
+    #[test]
+    fn an_unavailable_platform_verifier_fails_as_tls() {
+        // With a provider installed, only the verifier can fail the build.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let error = platform_config_where(Err("not initialised"))
+            .expect_err("an unavailable verifier builds no configuration");
+        assert_eq!(error.kind(), ErrorKind::Tls);
+        let source = std::error::Error::source(&error).map(ToString::to_string);
+        assert_eq!(source.as_deref(), Some("not initialised"));
+    }
 
     #[test]
     fn alpn_offers_h2_before_http1() {
