@@ -1,0 +1,232 @@
+pub mod euripos
+pub use euripos::http
+#[non_exhaustive] pub enum euripos::Constraint
+pub euripos::Constraint::Constrained
+pub euripos::Constraint::UltraConstrained
+pub euripos::Constraint::Unconstrained
+pub euripos::Constraint::Unknown
+impl core::clone::Clone for euripos::Constraint
+pub fn euripos::Constraint::clone(&self) -> Self
+impl core::cmp::Eq for euripos::Constraint
+impl core::cmp::PartialEq for euripos::Constraint
+pub fn euripos::Constraint::eq(&self, &Self) -> bool
+impl core::fmt::Debug for euripos::Constraint
+pub fn euripos::Constraint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for euripos::Constraint
+pub fn euripos::Constraint::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for euripos::Constraint
+impl core::marker::StructuralPartialEq for euripos::Constraint
+impl core::marker::Freeze for euripos::Constraint
+impl core::marker::Send for euripos::Constraint
+impl core::marker::Sync for euripos::Constraint
+impl core::marker::Unpin for euripos::Constraint
+impl core::marker::UnsafeUnpin for euripos::Constraint
+impl core::panic::unwind_safe::RefUnwindSafe for euripos::Constraint
+impl core::panic::unwind_safe::UnwindSafe for euripos::Constraint
+#[non_exhaustive] pub enum euripos::ErrorKind
+pub euripos::ErrorKind::Cancelled
+pub euripos::ErrorKind::Connect
+pub euripos::ErrorKind::NetworkChanged
+pub euripos::ErrorKind::Protocol
+pub euripos::ErrorKind::Timeout(euripos::TimeoutKind)
+pub euripos::ErrorKind::Tls
+impl core::clone::Clone for euripos::ErrorKind
+pub fn euripos::ErrorKind::clone(&self) -> Self
+impl core::cmp::Eq for euripos::ErrorKind
+impl core::cmp::PartialEq for euripos::ErrorKind
+pub fn euripos::ErrorKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for euripos::ErrorKind
+pub fn euripos::ErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for euripos::ErrorKind
+pub fn euripos::ErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for euripos::ErrorKind
+pub fn euripos::ErrorKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for euripos::ErrorKind
+impl core::marker::StructuralPartialEq for euripos::ErrorKind
+impl core::marker::Freeze for euripos::ErrorKind
+impl core::marker::Send for euripos::ErrorKind
+impl core::marker::Sync for euripos::ErrorKind
+impl core::marker::Unpin for euripos::ErrorKind
+impl core::marker::UnsafeUnpin for euripos::ErrorKind
+impl core::panic::unwind_safe::RefUnwindSafe for euripos::ErrorKind
+impl core::panic::unwind_safe::UnwindSafe for euripos::ErrorKind
+#[non_exhaustive] pub enum euripos::InterfaceKind
+pub euripos::InterfaceKind::Cellular
+pub euripos::InterfaceKind::Ethernet
+pub euripos::InterfaceKind::Other
+pub euripos::InterfaceKind::Unknown
+pub euripos::InterfaceKind::Wifi
+impl core::clone::Clone for euripos::InterfaceKind
+pub fn euripos::InterfaceKind::clone(&self) -> Self
+impl core::cmp::Eq for euripos::InterfaceKind
+impl core::cmp::PartialEq for euripos::InterfaceKind
+pub fn euripos::InterfaceKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for euripos::InterfaceKind
+pub fn euripos::InterfaceKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for euripos::InterfaceKind
+pub fn euripos::InterfaceKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for euripos::InterfaceKind
+impl core::marker::StructuralPartialEq for euripos::InterfaceKind
+impl core::marker::Freeze for euripos::InterfaceKind
+impl core::marker::Send for euripos::InterfaceKind
+impl core::marker::Sync for euripos::InterfaceKind
+impl core::marker::Unpin for euripos::InterfaceKind
+impl core::marker::UnsafeUnpin for euripos::InterfaceKind
+impl core::panic::unwind_safe::RefUnwindSafe for euripos::InterfaceKind
+impl core::panic::unwind_safe::UnwindSafe for euripos::InterfaceKind
+#[non_exhaustive] pub enum euripos::Metering
+pub euripos::Metering::Metered
+pub euripos::Metering::TemporarilyUnmetered
+pub euripos::Metering::Unknown
+pub euripos::Metering::Unmetered
+impl core::clone::Clone for euripos::Metering
+pub fn euripos::Metering::clone(&self) -> Self
+impl core::cmp::Eq for euripos::Metering
+impl core::cmp::PartialEq for euripos::Metering
+pub fn euripos::Metering::eq(&self, &Self) -> bool
+impl core::fmt::Debug for euripos::Metering
+pub fn euripos::Metering::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for euripos::Metering
+pub fn euripos::Metering::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for euripos::Metering
+impl core::marker::StructuralPartialEq for euripos::Metering
+impl core::marker::Freeze for euripos::Metering
+impl core::marker::Send for euripos::Metering
+impl core::marker::Sync for euripos::Metering
+impl core::marker::Unpin for euripos::Metering
+impl core::marker::UnsafeUnpin for euripos::Metering
+impl core::panic::unwind_safe::RefUnwindSafe for euripos::Metering
+impl core::panic::unwind_safe::UnwindSafe for euripos::Metering
+#[non_exhaustive] pub enum euripos::TimeoutKind
+pub euripos::TimeoutKind::Connect
+pub euripos::TimeoutKind::ReadStall
+pub euripos::TimeoutKind::Tls
+pub euripos::TimeoutKind::Total
+impl core::clone::Clone for euripos::TimeoutKind
+pub fn euripos::TimeoutKind::clone(&self) -> Self
+impl core::cmp::Eq for euripos::TimeoutKind
+impl core::cmp::PartialEq for euripos::TimeoutKind
+pub fn euripos::TimeoutKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for euripos::TimeoutKind
+pub fn euripos::TimeoutKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for euripos::TimeoutKind
+pub fn euripos::TimeoutKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for euripos::TimeoutKind
+pub fn euripos::TimeoutKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for euripos::TimeoutKind
+impl core::marker::StructuralPartialEq for euripos::TimeoutKind
+impl core::marker::Freeze for euripos::TimeoutKind
+impl core::marker::Send for euripos::TimeoutKind
+impl core::marker::Sync for euripos::TimeoutKind
+impl core::marker::Unpin for euripos::TimeoutKind
+impl core::marker::UnsafeUnpin for euripos::TimeoutKind
+impl core::panic::unwind_safe::RefUnwindSafe for euripos::TimeoutKind
+impl core::panic::unwind_safe::UnwindSafe for euripos::TimeoutKind
+pub struct euripos::Body
+impl euripos::Body
+pub fn euripos::Body::empty() -> Self
+impl core::convert::From<&'static [u8]> for euripos::Body
+pub fn euripos::Body::from(&'static [u8]) -> Self
+impl core::convert::From<&'static str> for euripos::Body
+pub fn euripos::Body::from(&'static str) -> Self
+impl core::convert::From<()> for euripos::Body
+pub fn euripos::Body::from(()) -> Self
+impl core::convert::From<alloc::string::String> for euripos::Body
+pub fn euripos::Body::from(alloc::string::String) -> Self
+impl core::convert::From<alloc::vec::Vec<u8>> for euripos::Body
+pub fn euripos::Body::from(alloc::vec::Vec<u8>) -> Self
+impl core::convert::From<bytes::bytes::Bytes> for euripos::Body
+pub fn euripos::Body::from(bytes::bytes::Bytes) -> Self
+impl core::default::Default for euripos::Body
+pub fn euripos::Body::default() -> Self
+impl core::fmt::Debug for euripos::Body
+pub fn euripos::Body::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl http_body::Body for euripos::Body
+pub type euripos::Body::Data = bytes::bytes::Bytes
+pub type euripos::Body::Error = euripos::Error
+pub fn euripos::Body::is_end_stream(&self) -> bool
+pub fn euripos::Body::poll_frame(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<core::option::Option<core::result::Result<http_body::frame::Frame<Self::Data>, Self::Error>>>
+pub fn euripos::Body::size_hint(&self) -> http_body::size_hint::SizeHint
+impl !core::marker::Freeze for euripos::Body
+impl core::marker::Send for euripos::Body
+impl core::marker::Sync for euripos::Body
+impl core::marker::Unpin for euripos::Body
+impl core::marker::UnsafeUnpin for euripos::Body
+impl !core::panic::unwind_safe::RefUnwindSafe for euripos::Body
+impl !core::panic::unwind_safe::UnwindSafe for euripos::Body
+pub struct euripos::Client
+impl euripos::Client
+pub fn euripos::Client::builder() -> euripos::ClientBuilder
+pub fn euripos::Client::network_facts(&self) -> euripos::NetworkFacts
+pub fn euripos::Client::new() -> Self
+pub fn euripos::Client::send<B>(&self, http::request::Request<B>) -> impl core::future::future::Future<Output = core::result::Result<http::response::Response<euripos::Body>, euripos::Error>> + core::marker::Send + 'static where B: core::convert::Into<euripos::Body>
+impl core::clone::Clone for euripos::Client
+pub fn euripos::Client::clone(&self) -> Self
+impl core::default::Default for euripos::Client
+pub fn euripos::Client::default() -> Self
+impl core::fmt::Debug for euripos::Client
+pub fn euripos::Client::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for euripos::Client
+impl core::marker::Send for euripos::Client
+impl core::marker::Sync for euripos::Client
+impl core::marker::Unpin for euripos::Client
+impl core::marker::UnsafeUnpin for euripos::Client
+impl !core::panic::unwind_safe::RefUnwindSafe for euripos::Client
+impl !core::panic::unwind_safe::UnwindSafe for euripos::Client
+pub struct euripos::ClientBuilder
+impl euripos::ClientBuilder
+pub fn euripos::ClientBuilder::build(self) -> euripos::Client
+pub fn euripos::ClientBuilder::connect_timeout(self, core::time::Duration) -> Self
+pub fn euripos::ClientBuilder::new() -> Self
+pub fn euripos::ClientBuilder::read_stall_timeout(self, core::time::Duration) -> Self
+pub fn euripos::ClientBuilder::tls_timeout(self, core::time::Duration) -> Self
+pub fn euripos::ClientBuilder::total_timeout(self, core::time::Duration) -> Self
+impl core::default::Default for euripos::ClientBuilder
+pub fn euripos::ClientBuilder::default() -> Self
+impl core::fmt::Debug for euripos::ClientBuilder
+pub fn euripos::ClientBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for euripos::ClientBuilder
+impl core::marker::Send for euripos::ClientBuilder
+impl core::marker::Sync for euripos::ClientBuilder
+impl core::marker::Unpin for euripos::ClientBuilder
+impl core::marker::UnsafeUnpin for euripos::ClientBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for euripos::ClientBuilder
+impl core::panic::unwind_safe::UnwindSafe for euripos::ClientBuilder
+pub struct euripos::Error
+impl euripos::Error
+pub fn euripos::Error::kind(&self) -> euripos::ErrorKind
+impl core::error::Error for euripos::Error
+pub fn euripos::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for euripos::Error
+pub fn euripos::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for euripos::Error
+pub fn euripos::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for euripos::Error
+impl core::marker::Send for euripos::Error
+impl core::marker::Sync for euripos::Error
+impl core::marker::Unpin for euripos::Error
+impl core::marker::UnsafeUnpin for euripos::Error
+impl !core::panic::unwind_safe::RefUnwindSafe for euripos::Error
+impl !core::panic::unwind_safe::UnwindSafe for euripos::Error
+pub struct euripos::NetworkFacts
+impl euripos::NetworkFacts
+pub fn euripos::NetworkFacts::constraint(&self) -> euripos::Constraint
+pub fn euripos::NetworkFacts::interface(&self) -> euripos::InterfaceKind
+pub fn euripos::NetworkFacts::metering(&self) -> euripos::Metering
+impl core::clone::Clone for euripos::NetworkFacts
+pub fn euripos::NetworkFacts::clone(&self) -> Self
+impl core::cmp::Eq for euripos::NetworkFacts
+impl core::cmp::PartialEq for euripos::NetworkFacts
+pub fn euripos::NetworkFacts::eq(&self, &Self) -> bool
+impl core::fmt::Debug for euripos::NetworkFacts
+pub fn euripos::NetworkFacts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for euripos::NetworkFacts
+pub fn euripos::NetworkFacts::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for euripos::NetworkFacts
+impl core::marker::Freeze for euripos::NetworkFacts
+impl core::marker::Send for euripos::NetworkFacts
+impl core::marker::Sync for euripos::NetworkFacts
+impl core::marker::Unpin for euripos::NetworkFacts
+impl core::marker::UnsafeUnpin for euripos::NetworkFacts
+impl core::panic::unwind_safe::RefUnwindSafe for euripos::NetworkFacts
+impl core::panic::unwind_safe::UnwindSafe for euripos::NetworkFacts

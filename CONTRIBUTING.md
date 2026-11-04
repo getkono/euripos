@@ -14,12 +14,17 @@ mise is the task interface. CI runs these same tasks, so a green `mise run check
 
 | Task | What it runs |
 |---|---|
-| `mise run check` | `lint`, `test`, `docs:check` and `api:check` |
+| `mise run check` | `lint`, `test`, `docs:check` and `api` |
 | `mise run fix` | `cargo fmt` and `cargo clippy --fix` |
 | `mise run lint` | `cargo fmt --check`, clippy pedantic with warnings denied, `cargo deny check` |
 | `mise run test` | Host unit, integration and doc tests |
 | `mise run docs:check` | rustdoc with warnings denied |
-| `mise run api:check` | The facade crate's public API through `cargo public-api` (pinned nightly) |
+| `mise run api` | `api:check` and `api:cfg` |
+| `mise run api:check` | The facade crate's public API through `cargo public-api` (pinned nightly), diffed against `crates/euripos/tests/public-api/euripos.txt` |
+| `mise run api:bless` | Rewrites that snapshot; commit it with the change that alters the API |
+| `mise run api:cfg` | Fails when the public API differs between the supported platforms or feature sets |
+| `mise run api:semver [base]` | `cargo-semver-checks` against `base` (default `origin/main`); breaking only where a commit declares it |
+| `mise run gates:selftest` | Proves each API gate and clippy pedantic reject a seeded violation |
 | `mise run msrv` | `cargo check` on the declared `rust-version` |
 | `mise run size [target]` | Stripped size of the minimal client for a target |
 | `mise run commits:check [base]` | Conventional Commits on the branch since `base` |
@@ -75,7 +80,7 @@ Design precedes code. A change that adds or alters a behaviour lands a design se
 
 ## API style
 
-The [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/checklist.html) apply, checked by clippy pedantic, `cargo public-api` and `cargo-semver-checks`.
+The [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/checklist.html) apply, checked by clippy pedantic, `cargo public-api` and `cargo-semver-checks`. [docs/design/api.md](docs/design/api.md) holds the public API's design, the checklist and the gates.
 
 - **Naming** follows RFC 430: `UpperCamelCase` types, `snake_case` functions, `as_`/`to_`/`into_` conversions by cost, no `get_` prefix on getters.
 - **Errors**: one public `Error` type per crate, implementing `std::error::Error + Send + Sync + 'static`, with a `kind()` returning a `#[non_exhaustive]` `ErrorKind`. Messages are lowercase with no trailing punctuation, and the cause is reachable through `source()` rather than repeated in the message. No `unwrap` or `expect` outside tests, except on an invariant a comment states.
