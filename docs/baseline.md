@@ -61,7 +61,7 @@ Option 1 is how the hyper-util pool layers are meant to compose for ALPN, and it
 
 ### Validated by
 
-`client::tests::tls::alpn_h2_shares_one_connection_between_requests` (three sequential and four concurrent requests over one accepted connection), `without_alpn_h2_the_client_falls_back_to_http1_and_reuses_it`, and `a_request_within_every_timeout_completes_and_reuses_its_connection` in `crates/euripos/tests/timeouts.rs`.
+`client::tests::tls::alpn_h2_shares_one_connection_between_requests` (three sequential and four concurrent requests over one accepted connection), `concurrent_first_requests_to_an_h2_origin_all_succeed`, `without_alpn_h2_the_client_falls_back_to_http1_and_reuses_it`, and in `crates/euripos/tests/timeouts.rs` `a_request_within_every_timeout_completes_and_reuses_its_connection`, `a_connection_whose_request_timed_out_before_its_head_is_not_reused` and `a_connection_whose_body_stalled_is_not_reused`. hyper also closes an HTTP/1.1 connection whose exchange was abandoned, so those two tests pass without the unusable mark; the mark closes the window before hyper's connection task has noticed, in which the next request could be handed the connection. No test reaches the replacement of a connection that reports itself closed at checkout.
 
 ## TLS and protocol negotiation
 
