@@ -1,0 +1,6 @@
+[toolchain]
+# The development toolchain, pinned so lints do not change under a branch.
+# The MSRV is `rust-version` in Cargo.toml and has its own CI job.
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

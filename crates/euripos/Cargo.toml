@@ -1,0 +1,17 @@
+[package]
+name = "euripos"
+description = "An async HTTP client that adapts its transport to the network it is on"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["http", "client", "async", "network"]
+categories = ["network-programming", "web-programming::http-client"]
+
+[dependencies]
+
+[lints]
+workspace = true

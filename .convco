@@ -1,0 +1,23 @@
+# convco configuration (conventional-changelog-config-spec). Only these types
+# are accepted in a commit message or pull request title; see CONTRIBUTING.md.
+types:
+  - type: feat
+    section: Features
+  - type: fix
+    section: Bug Fixes
+  - type: perf
+    section: Performance
+  - type: refactor
+    section: Refactoring
+  - type: docs
+    section: Documentation
+  - type: test
+    section: Tests
+  - type: build
+    section: Build
+  - type: ci
+    section: CI
+  - type: chore
+    section: Chores
+  - type: revert
+    section: Reverts

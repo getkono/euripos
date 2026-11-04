@@ -13,8 +13,11 @@ An async Rust HTTP client with a platform-agnostic API and first-class integrati
 
 ## Commits and pull requests
 
+[CONTRIBUTING.md](CONTRIBUTING.md) holds the full conventions (commits, MSRV, design-doc template, tests, error and naming style, feature flags, releases); a review checks the whole tree against it.
+
 - Conventional Commits, enforced by convco. Types: feat fix docs test refactor perf build ci chore revert.
-- Atomic commits; every commit builds and passes tests. Breaking changes use `!` and a `BREAKING CHANGE:` footer.
+- Pull requests are squash-merged, the only merge method. The pull request title is the commit on `main`: it is a Conventional Commit, and CI checks it.
+- Atomic commits within a pull request; every commit builds and passes tests. Breaking changes use `!` and a `BREAKING CHANGE:` footer.
 - Bug fixes: a red test commit first, then the fix.
-- Pull requests are merged, not squashed or rebased.
+- `mise run check` is the local gate; CI runs the same tasks.
 - No `TODO` without an issue: write `TODO(#NN)`.
