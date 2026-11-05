@@ -52,11 +52,11 @@ Requests and responses need a representation that interoperates with the rest of
 
 ### Choice
 
-1. `Client::send<B: Into<Body>>(&self, Request<B>) -> impl Future<Output = Result<Response<Body>, Error>> + Send + 'static`. `Body` implements `http_body::Body<Data = Bytes, Error = euripos::Error>`, is `Send + Sync + Unpin` but neither `UnwindSafe` nor `RefUnwindSafe`, and converts from `Bytes`, `Vec<u8>`, `&'static [u8]`, `String`, `&'static str` and `()`; `Body::empty()` and `Default` give an empty body.
+1. `Client::send<B: Into<Body>>(&self, Request<B>) -> impl Future<Output = Result<Response<Body>, Error>> + Send + 'static`. `Body` implements `http_body::Body<Data = Bytes, Error = euripos::Error>`, is `Send + Sync + Unpin` but neither `UnwindSafe` nor `RefUnwindSafe`, and converts from `Bytes`, `Vec<u8>`, `&'static [u8]`, `String`, `&'static str` and `()`; `Body::empty()` and `Default` give an empty body. The reqwest-parity additions to `Body` (`wrap` for a streaming request body, and the `chunk`, `bytes` and `text` readers) are designed in [parity.md](parity.md).
 
 ### Rationale
 
-The `http` types are what hyper speaks, so no conversion sits on the hot path and callers reuse what they know. Re-exporting `http` makes its major version part of euripos's API, which it already is through `send`'s signature; the re-export lets callers write `euripos::http::Request` without a matching dependency. `Into<Body>` keeps the request side simple (`Request::get(uri).body(())`) and keeps `http_body`'s generic bounds out of the signature. A streaming request body is a later constructor on `Body` (for example `Body::wrap(impl http_body::Body)`), which is additive. Option 2 duplicates `http`; option 3 exposes `http_body`'s trait bounds and error conversion in every call. The future is `Send + 'static` so it can be spawned, which commits the transport to owning what it needs. Convenience builders (`client.get(url)`) are reqwest parity, decided with #8. `Body` opts out of `UnwindSafe` and `RefUnwindSafe` through a private marker field, for the same reason as `Client`: hyper's `Incoming`, which the transport (#3) puts behind it, is neither, and removing an auto trait then would be breaking.
+The `http` types are what hyper speaks, so no conversion sits on the hot path and callers reuse what they know. Re-exporting `http` makes its major version part of euripos's API, which it already is through `send`'s signature; the re-export lets callers write `euripos::http::Request` without a matching dependency. `Into<Body>` keeps the request side simple (`Request::get(uri).body(())`) and keeps `http_body`'s generic bounds out of the signature. A streaming request body is the additive constructor `Body::wrap(impl http_body::Body)` ([parity.md](parity.md), "Streaming bodies"). Option 2 duplicates `http`; option 3 exposes `http_body`'s trait bounds and error conversion in every call. The future is `Send + 'static` so it can be spawned, which commits the transport to owning what it needs. Convenience builders (`client.get(url)`) are reqwest parity, decided with #8. `Body` opts out of `UnwindSafe` and `RefUnwindSafe` through a private marker field, for the same reason as `Client`: hyper's `Incoming`, which the transport (#3) puts behind it, is neither, and removing an auto trait then would be breaking.
 
 ### Validated by
 
@@ -82,7 +82,7 @@ A caller deciding what to do about a failure needs to know what failed, not whic
 
 ### Choice
 
-1. `ErrorKind::{Connect, Tls, Timeout(TimeoutKind), Protocol, NetworkChanged, Cancelled}` and `TimeoutKind::{Connect, Tls, Total, ReadStall}`, both `#[non_exhaustive]`, `Copy + Eq + Hash`. `Display` is a lowercase message with no trailing punctuation that names the kind (`"read timed out"`) and never repeats the source. No `is_retryable`-style predicate ships.
+1. `ErrorKind::{Connect, Tls, Timeout(TimeoutKind), Protocol, NetworkChanged, Cancelled}`, with `Body` and `Decode` added for the bodies [parity.md](parity.md) designs, and `TimeoutKind::{Connect, Tls, Total, ReadStall}`, both `#[non_exhaustive]`, `Copy + Eq + Hash`. `Display` is a lowercase message with no trailing punctuation that names the kind (`"read timed out"`) and never repeats the source. No `is_retryable`-style predicate ships.
 
 ### Rationale
 

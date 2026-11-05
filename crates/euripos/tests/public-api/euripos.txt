@@ -24,8 +24,10 @@ impl core::marker::UnsafeUnpin for euripos::Constraint
 impl core::panic::unwind_safe::RefUnwindSafe for euripos::Constraint
 impl core::panic::unwind_safe::UnwindSafe for euripos::Constraint
 #[non_exhaustive] pub enum euripos::ErrorKind
+pub euripos::ErrorKind::Body
 pub euripos::ErrorKind::Cancelled
 pub euripos::ErrorKind::Connect
+pub euripos::ErrorKind::Decode
 pub euripos::ErrorKind::NetworkChanged
 pub euripos::ErrorKind::Protocol
 pub euripos::ErrorKind::Timeout(euripos::TimeoutKind)
@@ -169,7 +171,11 @@ impl core::panic::unwind_safe::RefUnwindSafe for euripos::TimeoutKind
 impl core::panic::unwind_safe::UnwindSafe for euripos::TimeoutKind
 pub struct euripos::Body
 impl euripos::Body
+pub async fn euripos::Body::bytes(self) -> core::result::Result<bytes::bytes::Bytes, euripos::Error>
+pub async fn euripos::Body::chunk(&mut self) -> core::result::Result<core::option::Option<bytes::bytes::Bytes>, euripos::Error>
 pub fn euripos::Body::empty() -> Self
+pub async fn euripos::Body::text(self) -> core::result::Result<alloc::string::String, euripos::Error>
+pub fn euripos::Body::wrap<B>(B) -> Self where B: http_body::Body<Data = bytes::bytes::Bytes> + core::marker::Send + core::marker::Sync + 'static, <B as http_body::Body>::Error: core::convert::Into<alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 impl core::convert::From<&'static [u8]> for euripos::Body
 pub fn euripos::Body::from(&'static [u8]) -> Self
 impl core::convert::From<&'static str> for euripos::Body

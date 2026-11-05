@@ -1,7 +1,8 @@
 //! The body type requests are sent with and responses are read through.
 
+use std::error::Error as StdError;
 use std::fmt;
-use std::future::Future;
+use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -16,12 +17,18 @@ use crate::pool::Lease;
 use crate::timeout::deadline;
 use crate::{Error, ErrorKind, TimeoutKind};
 
+/// A boxed error from a body's source.
+type BoxError = Box<dyn StdError + Send + Sync>;
+
 /// A request or response body: a stream of [`Bytes`] frames that implements
 /// [`http_body::Body`].
 ///
-/// Build one from bytes or a string with [`From`], or an empty one with
-/// [`Body::empty`]. A response body streams from the connection as it is
-/// read, under the client's total and read-stall timeouts.
+/// Build one from bytes or a string with [`From`], an empty one with
+/// [`Body::empty`], or one that streams from another [`http_body::Body`]
+/// with [`Body::wrap`]. A response body streams from the connection as it is
+/// read, under the client's total and read-stall timeouts; read it piece by
+/// piece with [`chunk`](Body::chunk), or whole with [`bytes`](Body::bytes)
+/// or [`text`](Body::text).
 pub struct Body {
     inner: Inner,
     _unwind: NotUnwindSafe,
@@ -32,6 +39,35 @@ enum Inner {
     Full(Option<Bytes>),
     /// A response body arriving from the connection.
     Streaming(Box<Streaming>),
+    /// A body streaming from a caller's source.
+    Wrapped(Box<dyn http_body::Body<Data = Bytes, Error = BoxError> + Send + Sync + Unpin>),
+}
+
+/// A caller's body, pinned, with its error boxed.
+struct Boxed<B>(Pin<Box<B>>);
+
+impl<B> http_body::Body for Boxed<B>
+where
+    B: http_body::Body<Data = Bytes>,
+    B::Error: Into<BoxError>,
+{
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, BoxError>>> {
+        self.get_mut().0.as_mut().poll_frame(cx).map_err(Into::into)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.0.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.0.size_hint()
+    }
 }
 
 /// A response body as it arrives, with the timeouts that bound it.
@@ -107,26 +143,109 @@ impl Body {
         read_stall: Duration,
         total: Instant,
     ) -> Self {
-        Self {
-            inner: Inner::Streaming(Box::new(Streaming {
-                incoming,
-                lease: Some(lease),
-                read_stall,
-                stall: Box::pin(tokio::time::sleep_until(deadline(read_stall))),
-                total: Box::pin(tokio::time::sleep_until(total)),
-                done: false,
-            })),
-            _unwind: NotUnwindSafe::default(),
-        }
+        Self::from_inner(Inner::Streaming(Box::new(Streaming {
+            incoming,
+            lease: Some(lease),
+            read_stall,
+            stall: Box::pin(tokio::time::sleep_until(deadline(read_stall))),
+            total: Box::pin(tokio::time::sleep_until(total)),
+            done: false,
+        })))
     }
 
     /// A body with no bytes.
     #[must_use]
     pub fn empty() -> Self {
+        Self::from_inner(Inner::Full(None))
+    }
+
+    /// A body that streams from `body` as the request is sent: each frame
+    /// is sent as `body` yields it, so the whole body never has to be in
+    /// memory.
+    ///
+    /// When `body` reports an exact [`size_hint`](http_body::Body::size_hint)
+    /// an HTTP/1.1 request carries it as `Content-Length`; otherwise the body
+    /// is sent chunked. A wrapped body cannot be sent twice, so a redirect
+    /// that must resend it (`307` or `308`) is returned rather than followed.
+    /// An error from `body` fails the request as
+    /// [`ErrorKind::Body`](crate::ErrorKind::Body), with that error as its
+    /// [`source`](std::error::Error::source).
+    pub fn wrap<B>(body: B) -> Self
+    where
+        B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
+        B::Error: Into<Box<dyn StdError + Send + Sync>>,
+    {
+        Self::from_inner(Inner::Wrapped(Box::new(Boxed(Box::pin(body)))))
+    }
+
+    fn from_inner(inner: Inner) -> Self {
         Self {
-            inner: Inner::Full(None),
+            inner,
             _unwind: NotUnwindSafe::default(),
         }
+    }
+
+    /// The next piece of the body, or `None` at its end.
+    ///
+    /// Trailers, which only HTTP/2 and chunked HTTP/1.1 bodies carry, are
+    /// skipped; read the body as an [`http_body::Body`] to see them.
+    ///
+    /// # Errors
+    ///
+    /// The error that ended the body: a timeout, or a broken connection
+    /// ([`ErrorKind::Protocol`](crate::ErrorKind::Protocol)). The body ends
+    /// with its first error.
+    pub async fn chunk(&mut self) -> Result<Option<Bytes>, Error> {
+        loop {
+            let Some(frame) = poll_fn(|cx| Pin::new(&mut *self).poll_frame(cx)).await else {
+                return Ok(None);
+            };
+            if let Ok(data) = frame?.into_data()
+                && !data.is_empty()
+            {
+                return Ok(Some(data));
+            }
+        }
+    }
+
+    /// The whole body, read to its end.
+    ///
+    /// The body is held in memory; the client's total timeout bounds how
+    /// long reading it may take, not how large it may be.
+    ///
+    /// # Errors
+    ///
+    /// As [`chunk`](Body::chunk).
+    pub async fn bytes(mut self) -> Result<Bytes, Error> {
+        let Some(first) = self.chunk().await? else {
+            return Ok(Bytes::new());
+        };
+        let Some(second) = self.chunk().await? else {
+            return Ok(first);
+        };
+        let mut all = Vec::with_capacity(first.len() + second.len());
+        all.extend_from_slice(&first);
+        all.extend_from_slice(&second);
+        while let Some(chunk) = self.chunk().await? {
+            all.extend_from_slice(&chunk);
+        }
+        Ok(all.into())
+    }
+
+    /// The whole body as UTF-8 text.
+    ///
+    /// The body is decoded as UTF-8 whatever charset its `Content-Type`
+    /// names.
+    ///
+    /// # Errors
+    ///
+    /// As [`bytes`](Body::bytes), and
+    /// [`ErrorKind::Decode`](crate::ErrorKind::Decode) when the body is not
+    /// UTF-8.
+    pub async fn text(self) -> Result<String, Error> {
+        let bytes = self.bytes().await?;
+        String::from_utf8(bytes.into())
+            .map_err(|error| Error::with_source(ErrorKind::Decode, error))
     }
 }
 
@@ -142,6 +261,7 @@ impl fmt::Debug for Body {
         match &self.inner {
             Inner::Full(bytes) => f.field("remaining", &bytes.as_ref().map_or(0, Bytes::len)),
             Inner::Streaming(streaming) => f.field("streaming", &!streaming.done),
+            Inner::Wrapped(_) => f.field("wrapped", &true),
         };
         f.finish_non_exhaustive()
     }
@@ -149,10 +269,7 @@ impl fmt::Debug for Body {
 
 impl From<Bytes> for Body {
     fn from(bytes: Bytes) -> Self {
-        Self {
-            inner: Inner::Full((!bytes.is_empty()).then_some(bytes)),
-            _unwind: NotUnwindSafe::default(),
-        }
+        Self::from_inner(Inner::Full((!bytes.is_empty()).then_some(bytes)))
     }
 }
 
@@ -197,6 +314,9 @@ impl http_body::Body for Body {
         match &mut self.get_mut().inner {
             Inner::Full(bytes) => Poll::Ready(bytes.take().map(|bytes| Ok(Frame::data(bytes)))),
             Inner::Streaming(streaming) => streaming.poll_frame(cx),
+            Inner::Wrapped(body) => Pin::new(body)
+                .poll_frame(cx)
+                .map_err(|error| Error::with_source(ErrorKind::Body, error)),
         }
     }
 
@@ -204,6 +324,7 @@ impl http_body::Body for Body {
         match &self.inner {
             Inner::Full(bytes) => bytes.is_none(),
             Inner::Streaming(streaming) => streaming.done,
+            Inner::Wrapped(body) => body.is_end_stream(),
         }
     }
 
@@ -214,6 +335,7 @@ impl http_body::Body for Body {
             }
             Inner::Streaming(streaming) if streaming.done => SizeHint::with_exact(0),
             Inner::Streaming(streaming) => streaming.incoming.size_hint(),
+            Inner::Wrapped(body) => body.size_hint(),
         }
     }
 }
