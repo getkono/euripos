@@ -4,6 +4,7 @@
 
 mod body;
 mod cookies;
+mod decompress;
 mod json;
 mod multipart;
 mod redirect;

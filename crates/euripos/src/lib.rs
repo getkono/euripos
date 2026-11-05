@@ -36,6 +36,7 @@
 mod body;
 mod client;
 mod cookies;
+mod decompress;
 mod error;
 mod facts;
 mod json;

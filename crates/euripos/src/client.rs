@@ -8,6 +8,7 @@ use std::time::Duration;
 use http::{Request, Response, header};
 
 use crate::cookies::Jar;
+use crate::decompress;
 use crate::marker::NotUnwindSafe;
 use crate::monitor::NetworkMonitor;
 use crate::pool::{Dst, Pool};
@@ -61,7 +62,12 @@ impl Client {
     /// [`Body::from_json`], sets `Content-Type` unless the request already
     /// has one. Redirects are followed as
     /// [`ClientBuilder::max_redirects`] describes, and the response is the
-    /// last one in the chain. The response body streams as it is read, under
+    /// last one in the chain. With the `gzip`, `brotli` or `zstd` feature
+    /// on, a request without `Accept-Encoding` or `Range` asks for those
+    /// codings, and a response in one of them is decoded as it is read, its
+    /// `Content-Encoding` and `Content-Length` removed; a request that sets
+    /// `Accept-Encoding` gets the response as sent. The response body
+    /// streams as it is read, under
     /// the same total and read-stall timeouts. The returned future owns
     /// everything it needs, so it can be spawned.
     ///
@@ -108,8 +114,18 @@ impl Client {
             ..
         } = parts;
         let mut extensions = Some(extensions);
+        // The client asks for the codings it decodes, unless the caller
+        // chose its own or asks for a range, whose bytes are of the
+        // encoded body (RFC 9110 §14.1.1).
+        let accept_encoding = if headers.contains_key(header::ACCEPT_ENCODING)
+            || headers.contains_key(header::RANGE)
+        {
+            None
+        } else {
+            decompress::accept_encoding()
+        };
         let mut redirects = 0;
-        loop {
+        let response = loop {
             // A body is copied only while a redirect could need it again.
             let replay = if self.max_redirects > redirects {
                 body.try_clone()
@@ -130,6 +146,11 @@ impl Client {
             {
                 request.headers_mut().insert(header::COOKIE, cookie);
             }
+            if let Some(accept_encoding) = &accept_encoding {
+                request
+                    .headers_mut()
+                    .insert(header::ACCEPT_ENCODING, accept_encoding.clone());
+            }
             let dst = Dst::from_uri(&uri)?;
             let (response, lease) =
                 until(total, TimeoutKind::Total, self.pool.send(dst, request)).await?;
@@ -139,7 +160,7 @@ impl Client {
             let response =
                 response.map(|incoming| Body::streaming(incoming, lease, read_stall, total));
             if self.max_redirects == 0 {
-                return Ok(response);
+                break response;
             }
             let Some(next) = redirect::follow(
                 response.status(),
@@ -147,7 +168,7 @@ impl Client {
                 &method,
                 &uri,
             ) else {
-                return Ok(response);
+                break response;
             };
             if redirects == self.max_redirects {
                 return Err(Error::new(ErrorKind::Redirect));
@@ -155,7 +176,7 @@ impl Client {
             body = if next.keep_body {
                 // A body that cannot be sent again ends the chain here.
                 let Some(replay) = replay else {
-                    return Ok(response);
+                    break response;
                 };
                 replay
             } else {
@@ -165,7 +186,12 @@ impl Client {
             redirect::strip(&mut headers, &uri, &next.uri, next.keep_body);
             method = next.method;
             uri = next.uri;
-        }
+        };
+        Ok(if accept_encoding.is_some() {
+            decompress::decode(response, &method)
+        } else {
+            response
+        })
     }
 
     /// What the platform reports about the network the client is using now.

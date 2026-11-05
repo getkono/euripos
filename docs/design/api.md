@@ -257,7 +257,7 @@ Against the [checklist](https://rust-lang.github.io/api-guidelines/checklist.htm
 | Guideline | Status |
 |---|---|
 | C-CASE, C-CONV, C-GETTER, C-ITER, C-ITER-TY | Holds: RFC 430 naming, `kind()`/`interface()` getters with no `get_`; no iterators yet |
-| C-FEATURE | Holds: `crypto-ring`, the default, names the provider it adds ([ADR 0001](../adr/0001-crypto-provider.md)); `api:cfg` renders every feature set |
+| C-FEATURE | Holds: `crypto-ring`, the default, names the provider it adds ([ADR 0001](../adr/0001-crypto-provider.md)); `gzip`, `brotli` and `zstd` name the content coding each decodes ([parity.md](parity.md)), with no `use-` or `with-` prefix; `api:cfg` renders every feature set |
 | C-WORD-ORDER | Holds: `ErrorKind`, `TimeoutKind`, `InterfaceKind` |
 | C-COMMON-TRAITS | Holds: `Debug` everywhere; `Clone`, `Eq`, `Hash` on the value types; `Copy` on the enums and `NetworkId`; `Default` on `Client`, `ClientBuilder`, `Body` |
 | C-CONV-TRAITS | Holds: `From` into `Body` |

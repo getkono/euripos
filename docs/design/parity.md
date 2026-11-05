@@ -157,3 +157,36 @@ The store is the RFC's algorithms and a mutex, a few hundred lines with tests, a
 ### Validated by
 
 `cookies::tests` (every date format to the same instant and invalid dates refused, `Max-Age` precedence and deletion, ignored pairs, domain and path matching and default paths, host-only cookies, domain cookies kept from other and single-label domains, `Secure` and the §5.4 ordering, replacement and expiry, the per-domain limit); `client::tests::the_cookie_store_is_off_by_default_and_shared_by_clones`; `tests/parity/cookies.rs`: a cookie set on a `303` reaches the next hop and a clone's later request, no cookie is kept without the store, and a caller's `Cookie` is sent alone.
+
+## Response decompression
+
+### Problem
+
+Servers compress responses for clients that ask, which saves bytes on every slow or metered path. A caller should get the decoded body without decoding by hand, and a binary that never needs a coding should not carry its decoder.
+
+### Constraints
+
+- RFC 9110 §12.5.3: a client lists the codings it accepts in `Accept-Encoding`; §8.4: `Content-Encoding` names the codings applied, in order. gzip is RFC 1952 (§8.4.1.3, with `x-gzip` its alias), `br` is RFC 7932, `zstd` is RFC 8878 §7.2 with the 8 MB window RFC 9659 caps it at.
+- §14.1.1: the bytes of a range request are bytes of the encoded representation.
+- Decoding is behaviour, not API: a feature may add it, but no public item (CONTRIBUTING.md, "Feature flags").
+- Default features stay the smallest working client, and the `size` budget holds.
+- No C toolchain beyond ring's: the decoders must build for every target and render on every `api:cfg` host.
+
+### Alternatives
+
+1. One feature per coding, `gzip`, `brotli` and `zstd`, each adding a pure-Rust decoder (`flate2` on `miniz_oxide`, `brotli-decompressor`, `ruzstd`); none on by default; no knob.
+2. The same codings with the C libraries (`zstd-sys`, `libz-sys`), or through `async-compression`, whose zstd is the C library.
+3. Always decode, with every coding in the default build.
+4. A `ClientBuilder` switch per coding, as reqwest's `no_gzip()` and friends.
+
+### Choice
+
+1. With a coding's feature on, a request that sets neither `Accept-Encoding` nor `Range` is sent with `Accept-Encoding` listing the enabled codings (`gzip, br, zstd` with all three), on every hop of a redirect chain. A response whose `Content-Encoding` is exactly one of them is decoded as its body is read, piece by piece, and loses its `Content-Encoding` and `Content-Length`, which described the encoded bytes; a stream that is corrupt, fails its checksum or ends early fails the body as `ErrorKind::Decode`. A response to `HEAD`, a `204` or a `304`, one with an unknown coding, and one with several codings stacked are returned as sent. A request that sets `Accept-Encoding` gets the response as sent. With no coding feature on, nothing is asked for and nothing decoded.
+
+### Rationale
+
+Each decoder is pure Rust, so every target builds it with the toolchain it already has, which option 2 would break for the `api:cfg` renders and the mobile jobs. Off by default (option 3) keeps the baseline and the minimal client as they are: asking for compression changes what the server sends, which is the kind of departure the baseline must not make on its own. A feature per coding lets a binary carry only the decoders its servers use. No knob (option 4): setting `Accept-Encoding` already says "give me the body as sent", and a per-coding switch would be API with no use the features do not cover. Asking for no coding on a range request keeps the client from decoding a slice of an encoded body. `ruzstd` decodes whole blocks from a reader, so the frame and block headers (RFC 8878 §3.1.1) are read here and only complete blocks handed to it, which keeps decoding incremental without buffering the body; frames may follow frames, skippable frames are skipped, and each frame's checksum is checked. Brotli has no checksum, so a corrupted brotli body can decode to wrong bytes without an error, as in every brotli decoder. A decoded body has no size bound beyond the total timeout, as reqwest's has none: a compression bomb is bounded in time, not in memory.
+
+### Validated by
+
+`decompress::tests` (the `Accept-Encoding` each feature set sends; unknown and stacked codings left alone; each coding decoded fed one byte, seven bytes and 4 KiB at a time, and refused truncated or, for the checksummed codings, corrupted; zstd frame after frame across many blocks); `tests/parity/decompress.rs`: each enabled coding arrives decoded with its headers removed after the client asked for it, a corrupt gzip body fails as `Decode`, a caller's `Accept-Encoding` and a range request get the body as sent, and with no feature nothing is asked for. `mise run test` and `mise run lint` run with all features as well as the defaults, so CI reaches the feature-gated code.

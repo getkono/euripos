@@ -14,6 +14,7 @@ use http_body::{Body as _, Frame, SizeHint};
 use hyper::body::Incoming;
 use tokio::time::{Instant, Sleep};
 
+use crate::decompress::Decoder;
 use crate::marker::NotUnwindSafe;
 use crate::pool::Lease;
 use crate::timeout::deadline;
@@ -48,6 +49,49 @@ enum Inner {
     Wrapped(Box<dyn http_body::Body<Data = Bytes, Error = BoxError> + Send + Sync + Unpin>),
     /// Bodies sent one after another; each is dropped when it ends.
     Chain(VecDeque<Body>),
+    /// A response body decoded from its content coding as it is read.
+    Decoded(Box<Decoded>),
+}
+
+/// A body read through the decoder for its content coding.
+struct Decoded {
+    body: Body,
+    decoder: Decoder,
+    /// Set once the decoded body has ended or failed.
+    done: bool,
+}
+
+impl Decoded {
+    fn poll_frame(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
+        let decode_error = |error| Error::with_source(ErrorKind::Decode, error);
+        while !self.done {
+            let decoded = match Pin::new(&mut self.body).poll_frame(cx) {
+                Poll::Pending => return Poll::Pending,
+                // Trailers carry no encoded bytes.
+                Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                    Ok(data) => self.decoder.feed(&data),
+                    Err(_) => continue,
+                },
+                Poll::Ready(Some(Err(error))) => {
+                    self.done = true;
+                    return Poll::Ready(Some(Err(error)));
+                }
+                Poll::Ready(None) => {
+                    self.done = true;
+                    self.decoder.finish()
+                }
+            };
+            match decoded {
+                Ok(data) if !data.is_empty() => return Poll::Ready(Some(Ok(Frame::data(data)))),
+                Ok(_) => {}
+                Err(error) => {
+                    self.done = true;
+                    return Poll::Ready(Some(Err(decode_error(error))));
+                }
+            }
+        }
+        Poll::Ready(None)
+    }
 }
 
 /// A caller's body, pinned, with its error boxed.
@@ -194,12 +238,21 @@ impl Body {
             Inner::Chain(bodies) => {
                 Inner::Chain(bodies.iter().map(Body::try_clone).collect::<Option<_>>()?)
             }
-            Inner::Streaming(_) | Inner::Wrapped(_) => return None,
+            Inner::Streaming(_) | Inner::Wrapped(_) | Inner::Decoded(_) => return None,
         };
         Some(Self {
             content_type: self.content_type.clone(),
             ..Self::from_inner(inner)
         })
+    }
+
+    /// `body` decoded by `decoder` as it is read.
+    pub(crate) fn decoded(body: Body, decoder: Decoder) -> Self {
+        Self::from_inner(Inner::Decoded(Box::new(Decoded {
+            body,
+            decoder,
+            done: false,
+        })))
     }
 
     /// A body that sends each of `bodies` in turn.
@@ -235,9 +288,11 @@ impl Body {
     ///
     /// # Errors
     ///
-    /// The error that ended the body: a timeout, or a broken connection
-    /// ([`ErrorKind::Protocol`](crate::ErrorKind::Protocol)). The body ends
-    /// with its first error.
+    /// The error that ended the body: a timeout, a broken connection
+    /// ([`ErrorKind::Protocol`](crate::ErrorKind::Protocol)), or a content
+    /// coding that does not decode
+    /// ([`ErrorKind::Decode`](crate::ErrorKind::Decode)). The body ends with
+    /// its first error.
     pub async fn chunk(&mut self) -> Result<Option<Bytes>, Error> {
         loop {
             let Some(frame) = poll_fn(|cx| Pin::new(&mut *self).poll_frame(cx)).await else {
@@ -306,6 +361,7 @@ impl fmt::Debug for Body {
             Inner::Streaming(streaming) => f.field("streaming", &!streaming.done),
             Inner::Wrapped(_) => f.field("wrapped", &true),
             Inner::Chain(bodies) => f.field("chain", bodies),
+            Inner::Decoded(decoded) => f.field("decoding", &decoded.body),
         };
         if let Some(content_type) = &self.content_type {
             f.field("content_type", content_type);
@@ -365,6 +421,7 @@ impl http_body::Body for Body {
                 .poll_frame(cx)
                 .map_err(|error| Error::with_source(ErrorKind::Body, error)),
             Inner::Chain(bodies) => poll_chain(bodies, cx),
+            Inner::Decoded(decoded) => decoded.poll_frame(cx),
         }
     }
 
@@ -374,6 +431,7 @@ impl http_body::Body for Body {
             Inner::Streaming(streaming) => streaming.done,
             Inner::Wrapped(body) => body.is_end_stream(),
             Inner::Chain(bodies) => bodies.iter().all(Body::is_end_stream),
+            Inner::Decoded(decoded) => decoded.done,
         }
     }
 
@@ -383,6 +441,9 @@ impl http_body::Body for Body {
                 SizeHint::with_exact(bytes.as_ref().map_or(0, |bytes| bytes.len() as u64))
             }
             Inner::Streaming(streaming) if streaming.done => SizeHint::with_exact(0),
+            Inner::Decoded(decoded) if decoded.done => SizeHint::with_exact(0),
+            // The decoded length is known only once it has been decoded.
+            Inner::Decoded(_) => SizeHint::new(),
             Inner::Streaming(streaming) => streaming.incoming.size_hint(),
             Inner::Wrapped(body) => body.size_hint(),
             Inner::Chain(bodies) => {
