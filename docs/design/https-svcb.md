@@ -26,7 +26,7 @@ The scope lists "what the server announces (ALPN, `Alt-Svc`, HTTPS/SVCB records)
 
 1. Every platform hands back RDATA. Linux re-encodes the `SVCB` hickory decoded (with hickory's own cache off, so the only cache is the per-network one); Android reads the whole response `android_res_nresult` returns with `dns::message`, which takes the answer section's type-65 records and the negative TTL from the authority section's SOA (RFC 2308); dnssd's reply already carries RDATA.
 
-The lookup of origin `host:port` queries `host` on port 443 and `_PORT._https.host` otherwise (RFC 9460, section 9.1), and none for an IP address. It follows AliasMode records up to four hops; ServiceMode records win over AliasMode ones at the same name; a record that is malformed, or that makes a key mandatory which the parser does not know, is ignored (section 8). The result is `HttpsRecords::Services`, the ServiceMode records lowest priority first with the name they were found at, or `HttpsRecords::Unknown`.
+The lookup of origin `host:port` queries `host` on port 443 and `_PORT._https.host` otherwise (RFC 9460, section 9.1), and none for an IP address. It follows AliasMode records up to four hops; where a name's records hold an AliasMode record, its ServiceMode records are ignored (section 2.4.1); a record that is malformed, or that makes a key mandatory which the parser does not know, is ignored (section 8). The result is `HttpsRecords::Services`, the ServiceMode records lowest priority first with the name they were found at, or `HttpsRecords::Unknown`.
 
 ### Rationale
 
@@ -34,7 +34,7 @@ Option 1 puts the RFC's validation rules (strictly increasing keys, `mandatory`,
 
 ### Validated by
 
-`dns::https_rr::tests` (RFC 9460 appendix D vectors, every malformed shape, truncation at every byte), `dns::message::tests`, `dns::tests::aliases_are_followed_with_the_least_ttl`, `service_records_win_over_aliases`, `alias_chains_are_bounded`, `records_are_published_at_the_port_prefixed_name`, and per platform below.
+`dns::https_rr::tests` (RFC 9460 appendix D vectors, every malformed shape, truncation at every byte), `dns::message::tests`, `dns::tests::aliases_are_followed_with_the_least_ttl`, `an_alias_overrides_service_records_in_its_set`, `alias_chains_are_bounded`, `records_are_published_at_the_port_prefixed_name`, and per platform below.
 
 ## Cache
 

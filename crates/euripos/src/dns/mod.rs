@@ -197,17 +197,13 @@ async fn resolve(
         // A record that is malformed or makes an unknown key mandatory is
         // ignored; with none left, the origin is as if it published none
         // (RFC 9460, section 8).
-        let parsed: Vec<ServiceRecord> = records
+        let (aliases, mut services): (Vec<ServiceRecord>, Vec<ServiceRecord>) = records
             .iter()
             .filter_map(|record| https_rr::parse(&record.rdata).ok())
-            .collect();
-        let mut services: Vec<ServiceRecord> = parsed
-            .iter()
-            .filter(|record| !record.is_alias())
-            .cloned()
-            .collect();
-        if !services.is_empty() {
-            // ServiceMode records win over AliasMode ones (section 2.4.1).
+            .partition(ServiceRecord::is_alias);
+        // An AliasMode record makes the recipient ignore every ServiceMode
+        // record in the same set (section 2.4.1).
+        if aliases.is_empty() && !services.is_empty() {
             services.sort_by_key(|record| record.priority);
             let records = HttpsRecords::Services {
                 owner: name.into(),
@@ -217,7 +213,7 @@ async fn resolve(
         }
         // An alias to `.`, to itself, or nothing usable: no service is
         // published (section 2.5.1).
-        match parsed.into_iter().find_map(|alias| alias.target) {
+        match aliases.into_iter().find_map(|alias| alias.target) {
             Some(target) if target != name => name = target,
             _ => return (HttpsRecords::Unknown, Some(ttl)),
         }
@@ -450,14 +446,33 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn service_records_win_over_aliases() {
-        let rdata = [alias("elsewhere.example"), service(1, &["h2"])];
+    async fn an_alias_overrides_service_records_in_its_set() {
+        let rdata = [service(1, &["h2"]), alias("elsewhere.example")];
+        let zone = Zone::new([
+            ("example.com", records(&rdata, 60)),
+            ("elsewhere.example", records(&[service(1, &["h3"])], 60)),
+        ]);
+        let found = zone
+            .lookup(&Resolver::default(), 1, "example.com", 443)
+            .await;
+        let HttpsRecords::Services { owner, .. } = &found else {
+            panic!("{found:?}");
+        };
+        assert_eq!(&**owner, "elsewhere.example");
+        assert_eq!(found.http3(), Http3::Offered);
+        assert_eq!(zone.queries(), ["example.com", "elsewhere.example"]);
+
+        // AliasMode to `.`.
+        let rdata = [service(1, &["h2"]), vec![0, 0, 0]];
         let zone = Zone::new([("example.com", records(&rdata, 60))]);
         let found = zone
             .lookup(&Resolver::default(), 1, "example.com", 443)
             .await;
-        assert_eq!(found.http3(), Http3::NotOffered);
-        assert_eq!(zone.queries(), ["example.com"]);
+        assert_eq!(
+            found,
+            HttpsRecords::Unknown,
+            "an alias to `.` publishes none"
+        );
     }
 
     #[tokio::test(start_paused = true)]
