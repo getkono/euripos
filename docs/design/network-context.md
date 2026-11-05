@@ -1,6 +1,6 @@
 # Network context
 
-The network context is what the client knows about the network it is on: an identity for it, and facts about it, every one of which may be `Unknown`. The network-keyed pool (#6), alternative-service and estimator state, and Happy Eyeballs history key on it. This document covers the model, the platform-agnostic monitor that keeps it current, and its Linux implementation. The public facts are also described in [api.md](api.md), "Network facts".
+The network context is what the client knows about the network it is on: an identity for it, and facts about it, every one of which may be `Unknown`. The network-keyed pool (#6), alternative-service and estimator state, and Happy Eyeballs history key on it. This document covers the model, the platform-agnostic monitor that keeps it current, and its Linux and Windows implementations. The public facts are also described in [api.md](api.md), "Network facts".
 
 ## Network identity
 
@@ -56,7 +56,7 @@ Consumers and callers adapt to the kind of network (metered, constrained, which 
 
 ### Choice
 
-1. On Linux: `interface()` from the link the route to the internet leaves through; `metering()` from NetworkManager; `constraint()` `Unknown`, since Linux has no low-data mode; `ipv4()` and `ipv6()` `Available` when the kernel routes a public address of that version, `Unavailable` when it does not; `proxy()` `Manual` when `http_proxy`, `https_proxy` or `all_proxy` (either case) is set and not empty, `Direct` otherwise.
+1. On Linux: `interface()` from the link the route to the internet leaves through; `metering()` from NetworkManager; `constraint()` `Unknown`, since Linux has no low-data mode; `ipv4()` and `ipv6()` `Available` when the kernel routes a public address of that version, `Unavailable` when it does not; `proxy()` `Manual` when `http_proxy`, `https_proxy` or `all_proxy` (either case) is set and not empty, `Direct` otherwise. On Windows, as "Windows monitor" sets out.
 
 ### Rationale
 
@@ -152,3 +152,57 @@ Coverage gaps, tracked in #45: the hosted CI runners do not run NetworkManager, 
 ### Validated by
 
 `platform::linux::netlink::tests` (`cloned_local_and_multicast_routes_are_not_signals`, `a_flood_of_cloned_routes_in_one_datagram_is_not_a_signal`, `wireless_link_events_are_not_signals_and_other_link_events_are`, `only_global_address_changes_are_signals`, parsing of route and link replies, and `the_kernel_routes_loopback_through_lo` against the host kernel); `platform::linux::networkmanager::tests::networkmanager_metered_values_map_as_documented`, and `metering_is_answered_with_no_owner_and_unknown_once_the_owner_leaves` against a name the test owns on the session bus (it skips where there is no session bus, except under CI, where it fails; CI runs every Linux test job under `dbus-run-session`); `platform::linux::tests::the_host_network_is_named_exactly_when_a_route_exists` and `the_source_opens_with_the_first_metering_answer_and_reads` on the Linux CI runners.
+
+## Windows monitor
+
+### Problem
+
+Windows reports interface and route changes through IP Helper, how much traffic costs through the Network List Manager, and the proxy through WinHTTP, each its own API with its own change signal. The proxy is where reqwest goes wrong on Windows: it reads the system proxy once, when the client is built ([reqwest#2674](https://github.com/seanmonstar/reqwest/issues/2674)), and does not evaluate PAC scripts at all ([reqwest#2715](https://github.com/seanmonstar/reqwest/issues/2715)).
+
+### Constraints
+
+- One implementation on Windows (Principle 2); scope names `NotifyIpInterfaceChange`, `NotifyRouteChange2`, `INetworkCostManager`, WinHTTP's proxy with PAC and WPAD, and rustls with the platform verifier (`docs/scope.md`, "Platform integration").
+- The same identity and facts as on Linux, so the monitor's decision procedure and the pool see one model.
+- The cost is `Unknown` where the cost manager cannot be read; the proxy is re-read when it may have changed, not once.
+- Callbacks arrive on system thread-pool threads; the monitor reads on its own thread.
+
+### Alternatives
+
+For the route to the internet:
+1. `GetBestRoute2` to a public address per IP version, as Linux asks the kernel.
+2. The lowest-metric default route from `GetIpForwardTable2`.
+
+For the bindings:
+1. The `windows` crate, which wraps COM interfaces and implements COM event sinks.
+2. `windows-sys`, already in the graph through tokio and rustls-platform-verifier, which has no COM support, so `INetworkCostManager` would be called through a hand-written vtable.
+
+For a change of proxy settings that is not a network change:
+1. A registry change notification on the current user's `Internet Settings` key, which WinHTTP reads the settings from.
+2. `WinHttpRegisterProxyChangeNotification`, which exists only from Windows 11 and Server 2022.
+3. Re-read only on a network signal.
+
+### Choice
+
+Option 1 in each. Every IP Helper notification is a signal; the monitor's comparison absorbs those that change nothing. A reading asks `GetBestRoute2` for the route to `8.8.8.8` and to `2001:4860:4860::8888`; any failure is no route for that version. The network key is Linux's: interface index, next hop and source address, an IPv6 source by its /64. The interface kind comes from `GetIfEntry2`: `IF_TYPE_IEEE80211` or the native 802.11 medium is Wi-Fi, `IF_TYPE_WWANPP`, `IF_TYPE_WWANPP2` or the wireless WAN medium is cellular, `IF_TYPE_ETHERNET_CSMACD` backed by hardware is Ethernet, and anything else (loopback, tunnels, VPN adapters, Hyper-V's virtual switch) is other.
+
+The monitor's thread joins the multithreaded COM apartment and opens `INetworkCostManager`; a reading calls `GetCost` for the machine's connections, and the `CostChanged` and `DataPlanStatusChanged` events are signals. `NLM_CONNECTION_COST_UNRESTRICTED` is unmetered and `FIXED` or `VARIABLE` metered; over the data limit or roaming the constraint is `Constrained`, and any other known cost `Unconstrained`; a cost with no level, or one that cannot be read, is `Unknown` for both. Approaching the data limit and congestion change neither fact.
+
+The proxy fact is read on every reading from `WinHttpGetIEProxyConfigForCurrentUser`: automatic detection or a PAC URL is `Automatic`, otherwise a proxy server is `Manual`, otherwise `Direct`; where the user has no settings (a service account), `WinHttpGetDefaultProxyConfiguration`, the machine's WinHTTP proxy, decides between `Manual` and `Direct`. A change under `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings` is a signal: the notification is thread-agnostic and re-armed in its wait callback before the monitor is woken, so a change made between two notifications is still read.
+
+An internal resolver evaluates the automatic configuration per URL with `WinHttpGetProxyForUrl` (WPAD by DHCP and DNS, then the PAC URL), and returns the ordered hops the script chose; discovery that finds no script is direct, as in WinHTTP and the browsers. When it is asked on a network other than the last, it calls `WinHttpResetAutoProxy` so the session and the WinHTTP service discard the script and discovery they cached, and the proxy is re-read per network rather than once. Its caller is the proxy path (#49), which also owns a fixed proxy's bypass list; until then only its tests call it.
+
+rustls-platform-verifier verifies through CryptoAPI on Windows and needs no initialisation, so the platform reports its verifier available, as on Linux.
+
+### Rationale
+
+`GetBestRoute2` applies the route table, interface metrics and the source address selection a connection gets, which a table scan (option 2) re-implements and gets wrong for VPNs that install more specific routes. The `windows` crate's COM support is what makes the cost manager's event sink a struct with two methods; with `windows-sys` it would be a hand-built vtable and reference count, the kind of `unsafe` the crate exists to remove. Both crates share `windows-link`, and the minimal client does not link the monitor, so the size budget is unaffected.
+
+A proxy that changes without a network change is the case reqwest#2674 reports; re-reading only on network signals (option 3) would miss it. `WinHttpRegisterProxyChangeNotification` (option 2) would leave Windows 10 without one. The registry key is where WinHTTP and WinINet read the user's settings from, and the watch is noisy (other Internet Settings change under it), which costs a reading that compares equal and publishes nothing.
+
+Over the data limit and roaming map to `Constrained` because Microsoft's guidance for those costs is that apps transfer only what the user asks for, the meaning `Constrained` has on every platform. A cost with flags but no level contradicts itself and is reported `Unknown`.
+
+Coverage gaps, tracked in #51: the hosted runners have one virtual wired adapter, an unrestricted cost and no proxy, so the interface kinds and the cost mapping are tested on fixtures, WPAD discovery and a reset on a real network change are not exercised, and the settings watch is tested on a key the test owns rather than through Settings.
+
+### Validated by
+
+On the Windows CI runners (x86_64 and aarch64): `platform::windows::tests::the_host_network_is_named_exactly_when_a_route_exists` (IPv4 routed, a network named, the same one on a second reading, the cost manager open), `loopback_routes_through_loopback`, `the_platform_verifier_rejects_an_untrusted_certificate`; `platform::windows::change::tests::both_notifications_register_and_cancel`; `platform::windows::cost::tests::the_host_cost_opens_subscribes_and_reads`; `platform::windows::proxy::tests::a_pac_script_picks_the_hops_per_url` (WinHTTP fetches a PAC script from a loopback server and runs it per URL, then again after a network change), `a_change_under_the_watched_key_wakes_the_watch` (twice, so the re-arm holds), `no_automatic_configuration_is_direct` and `the_host_configuration_reads`. On fixtures: `interfaces_are_classified_by_type_medium_and_hardware`, `cost_levels_and_flags_map_as_documented`, `user_settings_map_to_the_configuration_they_describe`, `proxy_lists_parse_in_order`, `a_rotated_ipv6_temporary_address_keeps_the_network`, `a_new_ipv4_address_or_gateway_is_a_new_network`. `crates/euripos/tests/network_facts.rs` reads known IPv4 availability through the public API on Windows.

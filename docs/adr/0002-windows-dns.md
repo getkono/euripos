@@ -33,4 +33,4 @@ No option dominates on every axis: hickory is portable and testable on Linux, an
 
 ### Validated by
 
-The hosted Windows runners do not run an NRPT or a VPN, so the split-DNS behaviour this ADR rests on is not exercised in CI. #14 validates the `DnsQueryEx` resolver on the Windows runners (an address and an HTTPS record from a name the test controls through the hosts file or a loopback resolver), and the device follow-up of #13 covers a VPN with NRPT rules.
+The hosted Windows runners do not run an NRPT or a VPN, so the split-DNS behaviour this ADR rests on is not exercised in CI. #14 validates the `DnsQueryEx` resolver on the Windows runners, and #51 covers split DNS under NRPT rules on a device.
