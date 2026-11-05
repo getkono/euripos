@@ -369,7 +369,7 @@ mod tests {
             runtime.block_on(async {
                 let mut source = network_source().await.unwrap();
                 let facts = source.observe();
-                // The cost manager is open, or this edition registers none
+                // The cost manager is open, or this edition provides none
                 // and the cost is `Unknown`.
                 if source.cost.is_none() {
                     let error = Cost::open(&Arc::new(Notify::new())).err().unwrap();

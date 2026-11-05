@@ -145,12 +145,15 @@ fn classify(cost: u32) -> (Metering, Constraint) {
     (metering, constraint)
 }
 
-/// Whether `error` says this Windows edition registers no Network List
-/// Manager, as on the hosted Windows Server 2025 runner, where the cost is
-/// `Unknown`.
+/// Whether `error` says this Windows edition provides no Network List
+/// Manager cost interface, as on the hosted Windows Server 2025 runner,
+/// where the cost is `Unknown`: the class is not registered
+/// (`REGDB_E_CLASSNOTREG`), or it is and does not hand out
+/// `INetworkCostManager` (`E_NOINTERFACE`). The runner has reported each.
 #[cfg(test)]
 pub(super) fn unregistered(error: &windows::core::Error) -> bool {
-    error.code() == windows::Win32::Foundation::REGDB_E_CLASSNOTREG
+    use windows::Win32::Foundation::{E_NOINTERFACE, REGDB_E_CLASSNOTREG};
+    [REGDB_E_CLASSNOTREG, E_NOINTERFACE].contains(&error.code())
 }
 
 #[cfg(test)]
@@ -199,8 +202,8 @@ mod tests {
     // The host's own Network List Manager: the cost reads, whatever it is,
     // and the event subscribes. On a thread of its own, which joins the
     // multithreaded apartment as the monitor's does. Windows Server 2025
-    // registers no Network List Manager class; there opening fails with
-    // exactly that error, and nothing else is accepted.
+    // provides no Network List Manager cost interface; there opening fails
+    // with one of the errors that says so, and nothing else is accepted.
     #[test]
     fn the_host_cost_opens_subscribes_and_reads() {
         let notify = Arc::new(Notify::new());
