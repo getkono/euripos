@@ -164,4 +164,4 @@ The example's unit tests (`cargo test --example baseline`: argument parsing and 
 
 ## Baseline revision
 
-The baseline is the commit on `main` that merges #33, the pull request that adds this file. Its SHA cannot be written in the commit that creates it; #34 records it here once #33 has merged. Until then the revision is the head of #33's branch, `feat/3-plain-hyper-baseline-client`. Tags are a maintainer's to cut.
+The baseline is `8c30f34b4edc20b6034ebbf3c8103aa2f7f860c0`, the commit on `main` that merged #33, the pull request that added this file. Later changes are measured against that revision: netlab builds the baseline from it, and a change that departs from it names its metric and shows its win over it. Tags are a maintainer's to cut.
