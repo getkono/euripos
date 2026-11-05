@@ -3,8 +3,8 @@
 //!
 //! One pool entry per origin ([`Dst`]), held in a `map`. Each entry is a
 //! `negotiate` service: it connects, and ALPN decides whether the connection
-//! becomes an HTTP/2 connection shared by every request through a `singleton`,
-//! or an HTTP/1.1 connection that serves one request at a time from a `cache`.
+//! becomes an HTTP/2 connection shared by every request through [`Shared`], or
+//! an HTTP/1.1 connection that serves one request at a time from a `cache`.
 //! See docs/baseline.md, "Connection pool".
 
 use std::error::Error as StdError;
@@ -20,10 +20,11 @@ use http::uri::{Authority, Scheme};
 use http::{HeaderValue, Request, Response, Uri, header};
 use hyper::body::Incoming;
 use hyper::client::conn::{http1, http2};
-use hyper_util::client::pool::{cache, map::Map, negotiate, singleton::Singleton};
+use hyper_util::client::pool::{cache, map::Map, negotiate};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio_rustls::client::TlsStream;
 use tower_layer::layer_fn;
 use tower_service::Service;
@@ -463,12 +464,81 @@ where
 
 /// One HTTP/2 connection per origin, made by `make` and shared by every
 /// request to it.
-fn shared<M>(make: M) -> Singleton<M, ()>
+fn shared<M>(make: M) -> Shared<M>
 where
     M: Service<()>,
-    M::Response: Clone,
 {
-    Singleton::new(make)
+    Shared {
+        make,
+        made: Arc::new(AsyncMutex::new(None)),
+    }
+}
+
+/// Shares the one connection `make` makes between every request.
+///
+/// A request that finds no connection makes one while holding the lock, so
+/// requests arriving meanwhile wait for it and share it. A request dropped
+/// mid-make only releases the lock, and the next one tries again. It replaces
+/// hyper-util's `singleton`, whose dropped participants can cancel a later
+/// attempt and panic (#37).
+struct Shared<M: Service<()>> {
+    make: M,
+    made: Arc<AsyncMutex<Option<M::Response>>>,
+}
+
+impl<M: Service<()>> Shared<M> {
+    /// Drops the shared connection unless `keep` holds for it. A connection
+    /// being made is left alone.
+    fn retain(&mut self, keep: impl FnOnce(&mut M::Response) -> bool) {
+        if let Ok(mut made) = self.made.try_lock()
+            && made.as_mut().is_some_and(|service| !keep(service))
+        {
+            *made = None;
+        }
+    }
+}
+
+impl<M: Service<()> + Clone> Clone for Shared<M> {
+    fn clone(&self) -> Self {
+        Self {
+            make: self.make.clone(),
+            made: self.made.clone(),
+        }
+    }
+}
+
+impl<M> Service<()> for Shared<M>
+where
+    M: Service<()> + Clone + Send + 'static,
+    M::Response: Clone + Send,
+    M::Error: Into<BoxError>,
+    M::Future: Send,
+{
+    type Response = M::Response;
+    type Error = BoxError;
+    type Future = BoxFuture<Result<M::Response, BoxError>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+        // `call` checks whether a connection is needed before making one.
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, (): ()) -> Self::Future {
+        let mut maker = self.make.clone();
+        let slot = self.made.clone();
+        Box::pin(async move {
+            let mut made = slot.lock().await;
+            if let Some(service) = &*made {
+                return Ok(service.clone());
+            }
+            poll_fn(|cx| maker.poll_ready(cx))
+                .await
+                .map_err(Into::into)?;
+            let service = maker.call(()).await.map_err(Into::into)?;
+            *made = Some(service.clone());
+            Ok(service)
+        })
+    }
 }
 
 /// Sends requests over one HTTP/1.1 connection, one at a time.
