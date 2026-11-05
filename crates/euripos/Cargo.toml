@@ -70,6 +70,14 @@ windows = { version = "0.62", default-features = false, features = [
 ] }
 windows-core = { version = "0.62", default-features = false, features = ["std"] }
 
+# macOS and iOS (docs/adr/0003-apple-network-framework.md): Network.framework
+# and libdispatch through declarations of their C API, whose callbacks are
+# blocks; `block2` implements the block ABI. `libc` for the socket address
+# layouts and `dlsym`.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+block2 = { version = "0.6", default-features = false, features = ["std"] }
+libc = "0.2"
+
 [lints]
 workspace = true
 

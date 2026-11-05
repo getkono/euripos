@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use rustls::ClientConfig;
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::ServerName;
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 
@@ -53,11 +53,10 @@ impl Trust {
     }
 
     /// Runs the TLS handshake for `host` over `tcp`.
-    pub(crate) async fn handshake(
-        &self,
-        host: &str,
-        tcp: TcpStream,
-    ) -> Result<TlsStream<TcpStream>, Error> {
+    pub(crate) async fn handshake<IO>(&self, host: &str, tcp: IO) -> Result<TlsStream<IO>, Error>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin,
+    {
         let name = ServerName::try_from(host.to_owned())
             .map_err(|error| Error::with_source(ErrorKind::Tls, error))?;
         let connector = TlsConnector::from(self.config()?);
@@ -113,7 +112,7 @@ pub(crate) fn with_alpn(mut config: ClientConfig) -> ClientConfig {
 }
 
 /// Whether the handshake on `stream` agreed on HTTP/2.
-pub(crate) fn negotiated_h2(stream: &TlsStream<TcpStream>) -> bool {
+pub(crate) fn negotiated_h2<IO>(stream: &TlsStream<IO>) -> bool {
     stream.get_ref().1.alpn_protocol() == Some(b"h2")
 }
 

@@ -1,5 +1,6 @@
 //! The connection pool: hyper-util's composable `client::pool` layers over a
-//! TCP and TLS connector.
+//! TCP and TLS connector. The platform opens the TCP connection
+//! ([`platform::connect`]).
 //!
 //! One pool entry per origin ([`Dst`]), held in a `map`. Each entry is a
 //! `negotiate` service: it connects, and ALPN decides whether the connection
@@ -23,7 +24,6 @@ use hyper::client::conn::{http1, http2};
 use hyper_util::client::pool::{cache, map::Map, negotiate};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::TcpStream;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_rustls::client::TlsStream;
 use tower_layer::layer_fn;
@@ -31,7 +31,7 @@ use tower_service::Service;
 
 use crate::timeout::{Timeouts, deadline, until};
 use crate::tls::{Trust, negotiated_h2};
-use crate::{Body, Error, ErrorKind, TimeoutKind};
+use crate::{Body, Error, ErrorKind, TimeoutKind, platform};
 
 type BoxError = Box<dyn StdError + Send + Sync>;
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -284,7 +284,7 @@ impl Service<Dst> for Connector {
             let tcp = until(
                 deadline(timeouts.connect),
                 TimeoutKind::Connect,
-                connect_tcp(&dst),
+                platform::connect(&dst.host, dst.port),
             )
             .await?;
             if !dst.tls {
@@ -307,25 +307,6 @@ impl Service<Dst> for Connector {
     }
 }
 
-/// Resolves `dst` and connects to its addresses in the order the resolver
-/// returned them, until one accepts.
-async fn connect_tcp(dst: &Dst) -> Result<TcpStream, Error> {
-    let addresses = tokio::net::lookup_host((dst.host.as_str(), dst.port))
-        .await
-        .map_err(|error| Error::with_source(ErrorKind::Connect, error))?;
-    let mut last = None;
-    for address in addresses {
-        match TcpStream::connect(address).await {
-            Ok(tcp) => return Ok(tcp),
-            Err(error) => last = Some(error),
-        }
-    }
-    Err(match last {
-        Some(error) => Error::with_source(ErrorKind::Connect, error),
-        None => Error::with_source(ErrorKind::Connect, "the host resolved to no address"),
-    })
-}
-
 /// An open connection, and whether ALPN chose HTTP/2 on it.
 struct Connection {
     io: Io,
@@ -334,8 +315,8 @@ struct Connection {
 
 /// The byte stream under a connection.
 enum Io {
-    Tcp(TcpStream),
-    Tls(Box<TlsStream<TcpStream>>),
+    Tcp(platform::Stream),
+    Tls(Box<TlsStream<platform::Stream>>),
 }
 
 impl AsyncRead for Io {

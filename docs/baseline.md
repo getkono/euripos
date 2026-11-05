@@ -23,7 +23,7 @@ The plain client every euripos optimization is measured against (`docs/scope.md`
 
 ### Choice
 
-1. `crates/euripos/src/pool.rs` builds the pool from hyper-util's `map`, `negotiate` and `cache` and its own `Shared` layer for HTTP/2 (see "Connection pool") over a connector that resolves the host with `tokio::net::lookup_host`, connects to each returned address in order until one accepts, and runs TLS for `https`. Sockets keep the operating system's options: no `TCP_NODELAY`, no keepalive, no happy-eyeballs race. `http` requests use HTTP/1.1 only; there is no HTTP/2 without TLS. HTTP/1.1 requests are sent in origin form with a `Host` header unless the caller set one; HTTP/2 requests keep their absolute URI. A URI that is not absolute `http` or `https` fails with `ErrorKind::Connect`, since there is nothing to connect to.
+1. `crates/euripos/src/pool.rs` builds the pool from hyper-util's `map`, `negotiate` and `cache` and its own `Shared` layer for HTTP/2 (see "Connection pool") over a connector that resolves the host with `tokio::net::lookup_host`, connects to each returned address in order until one accepts, and runs TLS for `https`. On macOS and iOS the platform opens the TCP connection through Network.framework instead, by name ([ADR 0003](adr/0003-apple-network-framework.md)); TLS and everything above it are the same. Sockets keep the operating system's options: no `TCP_NODELAY`, no keepalive, no happy-eyeballs race. `http` requests use HTTP/1.1 only; there is no HTTP/2 without TLS. HTTP/1.1 requests are sent in origin form with a `Host` header unless the caller set one; HTTP/2 requests keep their absolute URI. A URI that is not absolute `http` or `https` fails with `ErrorKind::Connect`, since there is nothing to connect to.
 
 ### Rationale
 
@@ -72,7 +72,7 @@ Option 1 is how the hyper-util pool layers are meant to compose for ALPN, and it
 
 ### Constraints
 
-- rustls with the platform verifier on Linux, Windows and Android (scope, "Platform integration"); one crypto provider, ring ([ADR 0001](adr/0001-crypto-provider.md)).
+- rustls with the platform verifier on every platform, over a Network.framework connection on macOS and iOS (scope, "Platform integration"; [ADR 0003](adr/0003-apple-network-framework.md)); one crypto provider, ring ([ADR 0001](adr/0001-crypto-provider.md)).
 - ring cannot be in the normal dependency graph until `mise run api:cfg` renders each target where its C code builds (#29).
 - No platform type or call in the public API.
 

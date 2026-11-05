@@ -104,7 +104,7 @@ impl NetworkId {
     /// address behind it cannot be recovered by hashing candidates.
     #[allow(
         dead_code,
-        reason = "called by the platforms that name networks: Linux and Windows, until #11 and #12"
+        reason = "called by the platforms that name networks: every one but Android, until #12"
     )]
     pub(crate) fn from_key(key: &impl Hash) -> Self {
         static KEYS: OnceLock<RandomState> = OnceLock::new();
