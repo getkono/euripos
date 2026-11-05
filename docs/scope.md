@@ -52,7 +52,7 @@ One implementation per platform (Principle 2). The cells marked ADR are decided 
 | Linux | Sockets; `TCP_INFO` | rtnetlink link/route/address; NetworkManager `Metered` over D-Bus (absent: `Unknown`) | hickory over the system configuration, HTTPS RR | Environment variables; rustls with the platform verifier |
 | macOS, iOS | Network.framework `nw_connection` (TCP and TLS) as hyper's `Read`/`Write`: connect-by-name, VPN On Demand, MPTCP, viability and better-path events (Apple TN3151) | `nw_path_monitor`: expensive, constrained, ultra-constrained | Network.framework resolution; dnssd for HTTPS RR | System proxy and Security.framework trust through Network.framework |
 | Android | Sockets bound with `android_setsocknetwork`; `TCP_INFO` | `ConnectivityManager.NetworkCallback` over JNI (`NOT_METERED`, `TEMPORARILY_NOT_METERED`) | `android_res_nquery` per network (honours Private DNS) | `LinkProperties` proxy; rustls with the platform verifier, initialised through `ndk-context` |
-| Windows | Winsock sockets | `NotifyIpInterfaceChange`, `NotifyRouteChange2`; `INetworkCostManager` | ADR: `DnsQueryEx` or hickory | WinHTTP proxy with PAC/WPAD; rustls with the platform verifier |
+| Windows | Winsock sockets | `NotifyIpInterfaceChange`, `NotifyRouteChange2`; `INetworkCostManager` | `DnsQueryEx` ([ADR 0002](adr/0002-windows-dns.md)) | WinHTTP proxy with PAC/WPAD; rustls with the platform verifier |
 
 HTTP/3 uses h3 over quinn on every platform except Apple, where the QUIC transport (Network.framework QUIC or quinn over UDP) is decided by an ADR on device-lab evidence. Only one is chosen.
 
