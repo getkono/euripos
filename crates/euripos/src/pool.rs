@@ -432,7 +432,7 @@ where
     }
 }
 
-/// Makes the one HTTP/2 connection the `singleton` shares, over the
+/// Makes the one HTTP/2 connection [`Shared`] shares, over the
 /// connection the negotiation handed it.
 #[derive(Clone)]
 struct Http2<C> {
