@@ -18,11 +18,16 @@ const INTERFACE: &str = "org.freedesktop.NetworkManager";
 /// Follow `NetworkManager`'s `Metered` on the current runtime.
 ///
 /// The receiver holds `Unknown` until `NetworkManager` answers, and again if
-/// it goes away.
+/// it goes away. Its first change is the first answer: `NetworkManager`'s
+/// value, or `Unknown` where it, or the system bus, is absent.
 pub(super) fn watch_metering() -> watch::Receiver<Metering> {
     let (tx, rx) = watch::channel(Metering::Unknown);
     tokio::spawn(async move {
-        let _ = follow(&tx).await;
+        let _ = async {
+            let connection = zbus::Connection::system().await?;
+            follow(&connection, DESTINATION, &tx).await
+        }
+        .await;
         tx.send_replace(Metering::Unknown);
         // Keep the sender, so the receiver reads `Unknown` rather than closed.
         std::future::pending::<()>().await;
@@ -30,9 +35,49 @@ pub(super) fn watch_metering() -> watch::Receiver<Metering> {
     rx
 }
 
-async fn follow(tx: &watch::Sender<Metering>) -> zbus::Result<()> {
-    let connection = zbus::Connection::system().await?;
-    let proxy = zbus::Proxy::new(&connection, DESTINATION, PATH, INTERFACE).await?;
+/// Publish to `tx` the `Metered` of whichever process owns `destination`
+/// on `connection`, and `Unknown` while none does. Returns only on a bus
+/// error.
+async fn follow(
+    connection: &zbus::Connection,
+    destination: &str,
+    tx: &watch::Sender<Metering>,
+) -> zbus::Result<()> {
+    let bus = zbus::fdo::DBusProxy::new(connection).await?;
+    // Subscribed before the owner is asked for, so no change falls between.
+    let mut owners = pin!(
+        bus.receive_name_owner_changed_with_args(&[(0, destination)])
+            .await?
+    );
+    if !bus.name_has_owner(destination.try_into()?).await? {
+        tx.send_replace(Metering::Unknown);
+    }
+    loop {
+        let change = tokio::select! {
+            result = follow_owner(connection, destination, tx) => return result,
+            change = poll_fn(|cx| owners.as_mut().poll_next(cx)) => change,
+        };
+        let Some(change) = change else {
+            return Ok(());
+        };
+        // The owner left: its last value no longer holds.
+        if change.args()?.new_owner().is_none() {
+            tx.send_replace(Metering::Unknown);
+        }
+        // Follow the next owner, if any, through a proxy of its own.
+    }
+}
+
+/// Publish to `tx` the `Metered` the current owner of `destination` reports.
+///
+/// A proxy caches properties and keeps that cache when the owner leaves, so
+/// each owner gets a fresh proxy, whose first value is that owner's.
+async fn follow_owner(
+    connection: &zbus::Connection,
+    destination: &str,
+    tx: &watch::Sender<Metering>,
+) -> zbus::Result<()> {
+    let proxy = zbus::Proxy::new(connection, destination, PATH, INTERFACE).await?;
     // Yields the current value first, then each change.
     let mut changes = pin!(proxy.receive_property_changed::<u32>("Metered").await);
     while let Some(change) = poll_fn(|cx| changes.as_mut().poll_next(cx)).await {
@@ -60,8 +105,49 @@ pub(super) fn metering(value: u32) -> Metering {
 
 #[cfg(test)]
 mod tests {
-    use super::metering;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::sync::watch;
+    use tokio::time::timeout;
+
+    use super::{follow, metering};
     use crate::Metering;
+
+    // The owner-tracking path, against a name this test owns on the session
+    // bus: the system bus does not let an unprivileged process own a name.
+    #[tokio::test]
+    async fn metering_is_answered_with_no_owner_and_unknown_once_the_owner_leaves() {
+        let (Ok(watcher), Ok(owner)) = (
+            zbus::Connection::session().await,
+            zbus::Connection::session().await,
+        ) else {
+            eprintln!("skipped: no session bus");
+            return;
+        };
+        let name = format!("org.euripos.Test.P{}", std::process::id());
+        let tx = Arc::new(watch::channel(Metering::Metered).0);
+        let mut rx = tx.subscribe();
+        let follower = {
+            let (tx, name) = (Arc::clone(&tx), name.clone());
+            tokio::spawn(async move { follow(&watcher, &name, &tx).await })
+        };
+        let within = Duration::from_secs(5);
+
+        // Nobody owns the name: the answer is `Unknown`, at once.
+        timeout(within, rx.changed()).await.unwrap().unwrap();
+        assert_eq!(*rx.borrow_and_update(), Metering::Unknown);
+
+        // An owner that answered metered, then left.
+        owner.request_name(name.as_str()).await.unwrap();
+        tx.send_replace(Metering::Metered);
+        rx.borrow_and_update();
+        owner.release_name(name.as_str()).await.unwrap();
+        timeout(within, rx.changed()).await.unwrap().unwrap();
+        assert_eq!(*rx.borrow_and_update(), Metering::Unknown);
+
+        follower.abort();
+    }
 
     #[test]
     fn networkmanager_metered_values_map_as_documented() {

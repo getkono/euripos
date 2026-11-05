@@ -7,6 +7,7 @@ mod networkmanager;
 use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
+use std::time::Duration;
 use std::{env, fs, io};
 
 use tokio::sync::watch;
@@ -27,14 +28,24 @@ const PROBE_V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 
 /// `ARPHRD_ETHER`.
 const ARPHRD_ETHER: u16 = 1;
 
+/// How long opening the source waits for `NetworkManager`'s first answer,
+/// so the first reading carries metering. Within the monitor's 500 ms
+/// startup wait, leaving room for the reading itself.
+const METERING_STARTUP: Duration = Duration::from_millis(250);
+
 /// Open the Linux network source. Must be called on the monitor's runtime.
+///
+/// Waits up to [`METERING_STARTUP`] for the first metering answer; a slower
+/// one arrives as a change.
 pub(crate) async fn network_source() -> Option<LinuxSource> {
     let signals = Signals::open().ok()?;
     let kernel = Kernel::open().ok()?;
+    let mut metering = networkmanager::watch_metering();
+    let _ = tokio::time::timeout(METERING_STARTUP, metering.changed()).await;
     Some(LinuxSource {
         signals,
         kernel,
-        metering: networkmanager::watch_metering(),
+        metering,
         last: NetworkFacts::UNKNOWN,
     })
 }
@@ -171,10 +182,12 @@ fn proxy_config(var: impl Fn(&str) -> Option<OsString>) -> ProxyConfig {
 mod tests {
     use std::ffi::OsString;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::time::Instant;
 
     use super::netlink::Route;
     use super::{
-        ARPHRD_ETHER, Kernel, PROBE_V4, PROBE_V6, classify, key, network_source, proxy_config, read,
+        ARPHRD_ETHER, Kernel, METERING_STARTUP, PROBE_V4, PROBE_V6, classify, key, network_source,
+        proxy_config, read,
     };
     use crate::monitor::Source;
     use crate::{Constraint, InterfaceKind, IpAvailability, Metering, ProxyConfig};
@@ -279,9 +292,14 @@ mod tests {
         );
     }
 
+    // Whether the host runs `NetworkManager`, has a system bus without it,
+    // or has no system bus, the first metering answer comes before the
+    // startup wait ends, so the first reading carries it.
     #[tokio::test]
-    async fn the_source_opens_and_reads_on_a_runtime() {
+    async fn the_source_opens_with_the_first_metering_answer_and_reads() {
+        let opening = Instant::now();
         let mut source = network_source().await.unwrap();
+        assert!(opening.elapsed() < METERING_STARTUP);
         let facts = source.observe();
         assert_ne!(facts.ipv4, IpAvailability::Unknown);
     }
