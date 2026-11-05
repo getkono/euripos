@@ -110,7 +110,7 @@ impl Pool {
                     .fallback(layer_fn(|connect| {
                         cache::builder().build(Http1 { connect })
                     }))
-                    .upgrade(layer_fn(|connect| Singleton::new(Http2 { connect })))
+                    .upgrade(layer_fn(|connect| shared(Http2 { connect })))
                     .build()
             })
             .build();
@@ -461,6 +461,16 @@ where
     }
 }
 
+/// One HTTP/2 connection per origin, made by `make` and shared by every
+/// request to it.
+fn shared<M>(make: M) -> Singleton<M, ()>
+where
+    M: Service<()>,
+    M::Response: Clone,
+{
+    Singleton::new(make)
+}
+
 /// Sends requests over one HTTP/1.1 connection, one at a time.
 struct Http1Sender {
     sender: http1::SendRequest<Body>,
@@ -547,9 +557,50 @@ fn host_header(authority: &Authority, scheme: Option<&Scheme>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Dst, origin_form};
+    use super::{BoxError, Dst, origin_form, shared};
     use crate::{Body, ErrorKind};
     use http::{Request, Uri, header};
+    use std::future::{Ready, ready};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll};
+    use tower_service::Service;
+
+    /// Makes a connection, failing the first time it is asked.
+    #[derive(Clone, Default)]
+    struct FailsFirst {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Service<()> for FailsFirst {
+        type Response = u8;
+        type Error = BoxError;
+        type Future = Ready<Result<u8, BoxError>>;
+
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, (): ()) -> Self::Future {
+            ready(match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => Err("the first connection fails".into()),
+                _ => Ok(1),
+            })
+        }
+    }
+
+    /// A request whose attempt to make the shared connection already ended
+    /// can be dropped while the next request makes one: the next request
+    /// still gets its connection.
+    #[tokio::test]
+    async fn a_finished_wait_for_the_h2_connection_dropped_late_spares_the_next() {
+        let mut pool = shared(FailsFirst::default());
+        let mut first = pool.call(());
+        assert!((&mut first).await.is_err());
+        let second = pool.call(());
+        drop(first);
+        assert!(second.await.is_ok());
+    }
 
     #[test]
     fn origin_is_scheme_host_and_port_with_defaults_filled() {
