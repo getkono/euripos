@@ -111,7 +111,11 @@ impl Pool {
                     .fallback(layer_fn(|connect| {
                         cache::builder().build(Http1 { connect })
                     }))
-                    .upgrade(layer_fn(|connect| shared(Http2 { connect })))
+                    .upgrade(layer_fn(|connect| {
+                        shared(Http2 { connect }, |http2: &Http2Sender| {
+                            !http2.0.is_closed()
+                        })
+                    }))
                     .build()
             })
             .build();
@@ -126,12 +130,11 @@ impl Pool {
                     let mut origin = {
                         let mut map = map.lock().unwrap_or_else(PoisonError::into_inner);
                         let origin = map.service(&dst);
+                        // `Shared` replaces a closed HTTP/2 connection itself,
+                        // under its lock.
                         origin
                             .fallback_mut()
                             .retain(|http1: &mut Http1Sender| http1.is_reusable());
-                        origin
-                            .upgrade_mut()
-                            .retain(|http2: &mut Http2Sender| !http2.0.is_closed());
                         origin.clone()
                     };
                     poll_fn(|cx| origin.poll_ready(cx))
@@ -465,45 +468,36 @@ where
 }
 
 /// One HTTP/2 connection per origin, made by `make` and shared by every
-/// request to it.
-fn shared<M>(make: M) -> Shared<M>
+/// request to it while `open` holds for it.
+fn shared<M>(make: M, open: fn(&M::Response) -> bool) -> Shared<M>
 where
     M: Service<()>,
 {
     Shared {
         make,
+        open,
         made: Arc::new(AsyncMutex::new(None)),
     }
 }
 
 /// Shares the one connection `make` makes between every request.
 ///
-/// A request that finds no connection makes one while holding the lock, so
-/// requests arriving meanwhile wait for it and share it. A request dropped
-/// mid-make only releases the lock, and the next one tries again. It replaces
-/// hyper-util's `singleton`, whose dropped participants can cancel a later
-/// attempt and panic (#37).
+/// A request that finds no connection, or one `open` no longer holds for,
+/// makes one while holding the lock, so requests arriving meanwhile wait for
+/// it and share it. A request dropped mid-make only releases the lock, and the
+/// next one tries again. It replaces hyper-util's `singleton`, whose dropped
+/// participants can cancel a later attempt and panic (#37).
 struct Shared<M: Service<()>> {
     make: M,
+    open: fn(&M::Response) -> bool,
     made: Arc<AsyncMutex<Option<M::Response>>>,
-}
-
-impl<M: Service<()>> Shared<M> {
-    /// Drops the shared connection unless `keep` holds for it. A connection
-    /// being made is left alone.
-    fn retain(&mut self, keep: impl FnOnce(&mut M::Response) -> bool) {
-        if let Ok(mut made) = self.made.try_lock()
-            && made.as_mut().is_some_and(|service| !keep(service))
-        {
-            *made = None;
-        }
-    }
 }
 
 impl<M: Service<()> + Clone> Clone for Shared<M> {
     fn clone(&self) -> Self {
         Self {
             make: self.make.clone(),
+            open: self.open,
             made: self.made.clone(),
         }
     }
@@ -527,11 +521,16 @@ where
 
     fn call(&mut self, (): ()) -> Self::Future {
         let mut maker = self.make.clone();
+        let open = self.open;
         let slot = self.made.clone();
         Box::pin(async move {
             let mut made = slot.lock().await;
-            if let Some(service) = &*made {
-                return Ok(service.clone());
+            // Checked under the lock, so a connection that closed is replaced
+            // however busy the lock is.
+            match &*made {
+                Some(service) if open(service) => return Ok(service.clone()),
+                Some(_) => *made = None,
+                None => {}
             }
             poll_fn(|cx| maker.poll_ready(cx))
                 .await
@@ -634,7 +633,7 @@ mod tests {
     use http::{Request, Uri, header};
     use std::future::{Ready, ready};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::task::{Context, Poll};
     use tower_service::Service;
 
@@ -666,12 +665,64 @@ mod tests {
     /// still gets its connection.
     #[tokio::test]
     async fn a_finished_wait_for_the_h2_connection_dropped_late_spares_the_next() {
-        let mut pool = shared(FailsFirst::default());
+        let mut pool = shared(FailsFirst::default(), |_| true);
         let mut first = pool.call(());
         assert!((&mut first).await.is_err());
         let second = pool.call(());
         drop(first);
         assert!(second.await.is_ok());
+    }
+
+    /// A connection that can be closed, numbered by the order it was made.
+    #[derive(Clone)]
+    struct Closable {
+        number: usize,
+        closed: Arc<AtomicBool>,
+    }
+
+    /// Makes a [`Closable`], counting how many it made.
+    #[derive(Clone, Default)]
+    struct MakesClosable {
+        made: Arc<AtomicUsize>,
+    }
+
+    impl Service<()> for MakesClosable {
+        type Response = Closable;
+        type Error = BoxError;
+        type Future = Ready<Result<Closable, BoxError>>;
+
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, (): ()) -> Self::Future {
+            ready(Ok(Closable {
+                number: self.made.fetch_add(1, Ordering::SeqCst),
+                closed: Arc::default(),
+            }))
+        }
+    }
+
+    /// A shared HTTP/2 connection that closed is replaced at the next
+    /// checkout, even when another request held the lock while the request
+    /// checking it out arrived.
+    #[tokio::test]
+    async fn a_closed_h2_connection_is_replaced_even_when_the_lock_was_held() {
+        let mut pool = shared(MakesClosable::default(), |connection| {
+            !connection.closed.load(Ordering::SeqCst)
+        });
+        let first = pool.call(()).await.expect("first connection");
+        first.closed.store(true, Ordering::SeqCst);
+        let held = pool.made.clone().lock_owned().await;
+        let checkout = tokio::spawn(pool.call(()));
+        tokio::task::yield_now().await;
+        drop(held);
+        let second = checkout
+            .await
+            .expect("the checkout task")
+            .expect("second connection");
+        assert!(!second.closed.load(Ordering::SeqCst));
+        assert_eq!(second.number, 1);
     }
 
     #[test]
