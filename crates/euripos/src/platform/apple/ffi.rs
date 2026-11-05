@@ -78,6 +78,7 @@ unsafe extern "C" {
         configure_tls: &ConfigureProtocol,
         configure_tcp: &ConfigureProtocol,
     ) -> nw_parameters_t;
+    pub(crate) fn nw_parameters_set_prefer_no_proxy(parameters: nw_parameters_t, prefer: bool);
 
     pub(crate) fn nw_connection_create(
         endpoint: nw_endpoint_t,

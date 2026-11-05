@@ -103,7 +103,8 @@ impl State {
 
 impl Stream {
     /// Create and start a connection to `host` and `port`, over TCP with
-    /// Network.framework's defaults and without its TLS.
+    /// Network.framework's defaults, without its TLS, and preferring no
+    /// system proxy.
     fn open(host: &str, port: u16) -> io::Result<Self> {
         let host = CString::new(host)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the host holds a NUL"))?;
@@ -126,6 +127,10 @@ impl Stream {
                 "Network.framework rejected the host or the parameters",
             ));
         };
+        // Proxies are the client's own concern (#49): a system proxy must not
+        // carry the connection without the client knowing.
+        // SAFETY: the parameters are live.
+        unsafe { ffi::nw_parameters_set_prefer_no_proxy(parameters.0, true) };
         // SAFETY: the endpoint and parameters are live; the connection
         // keeps its own references to them.
         let connection = Owned::new(unsafe { ffi::nw_connection_create(endpoint.0, parameters.0) })
