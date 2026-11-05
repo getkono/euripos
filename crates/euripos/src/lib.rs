@@ -1,9 +1,11 @@
 //! euripos is an async HTTP client with a platform-agnostic API that adapts
 //! its transport to the network it is on.
 //!
-//! The crate is pre-release: this is the public API the transport will meet,
-//! and [`Client::send`] does not send yet. Requests and responses are the
-//! [`http`] crate's types, re-exported so the versions always match:
+//! The crate is pre-release. [`Client`] is the plain baseline every later
+//! optimization is measured against: HTTP/1.1 and HTTP/2 on hyper, TLS on
+//! rustls with the platform verifier, and four finite timeouts, with no
+//! adaptive behaviour. Requests and responses are the [`http`] crate's types,
+//! re-exported so the versions always match:
 //!
 //! ```no_run
 //! use std::time::Duration;
@@ -36,6 +38,10 @@ mod client;
 mod error;
 mod facts;
 mod marker;
+mod platform;
+mod pool;
+mod timeout;
+mod tls;
 
 pub use body::Body;
 pub use client::{Client, ClientBuilder};
