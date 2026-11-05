@@ -190,7 +190,9 @@ allow-workspace = false
 # euripos: one crypto provider in the dependency graph, ring
 # (docs/adr/0001-crypto-provider.md), and tokio as the only runtime. Admitting
 # a second provider moves it from this list, and from the `bans.features`
-# entries below, in the change that adds its `crypto-*` feature.
+# entries below, in the change that adds its `crypto-*` feature. aws-lc-rs was
+# evaluated and not admitted (ADR 0001, "aws-lc-rs as a second provider"); #60
+# re-decides it with performance results.
 deny = [
     { crate = "aws-lc-rs", reason = "ring is the only crypto provider" },
     { crate = "aws-lc-sys", reason = "ring is the only crypto provider" },
