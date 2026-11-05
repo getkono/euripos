@@ -3,6 +3,7 @@
 //! feature.
 
 mod body;
+mod cookies;
 mod json;
 mod multipart;
 mod redirect;

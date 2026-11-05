@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use http::{Request, Response, header};
 
+use crate::cookies::Jar;
 use crate::marker::NotUnwindSafe;
 use crate::monitor::NetworkMonitor;
 use crate::pool::{Dst, Pool};
@@ -24,6 +25,8 @@ use crate::{Body, Error, ErrorKind, NetworkFacts, TimeoutKind};
 pub struct Client {
     timeouts: Timeouts,
     max_redirects: u32,
+    /// The cookie store, when the client keeps one.
+    cookies: Option<Arc<Jar>>,
     pool: Arc<Pool>,
     _unwind: NotUnwindSafe,
 }
@@ -33,6 +36,7 @@ impl fmt::Debug for Client {
         f.debug_struct("Client")
             .field("timeouts", &self.timeouts)
             .field("max_redirects", &self.max_redirects)
+            .field("cookie_store", &self.cookies.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -120,9 +124,18 @@ impl Client {
             if let Some(extensions) = extensions.take() {
                 *request.extensions_mut() = extensions;
             }
+            if let Some(jar) = &self.cookies
+                && !headers.contains_key(header::COOKIE)
+                && let Some(cookie) = jar.header(&uri)
+            {
+                request.headers_mut().insert(header::COOKIE, cookie);
+            }
             let dst = Dst::from_uri(&uri)?;
             let (response, lease) =
                 until(total, TimeoutKind::Total, self.pool.send(dst, request)).await?;
+            if let Some(jar) = &self.cookies {
+                jar.store(&uri, response.headers().get_all(header::SET_COOKIE));
+            }
             let response =
                 response.map(|incoming| Body::streaming(incoming, lease, read_stall, total));
             if self.max_redirects == 0 {
@@ -174,16 +187,17 @@ impl Default for Client {
 
 /// Builds a [`Client`].
 ///
-/// The settings are the four timeouts and how many redirects to follow.
-/// Each timeout is finite: it can be changed but not turned off. The
-/// defaults are 10 seconds to connect, 10 seconds for the TLS handshake,
-/// 30 seconds for the whole request, 30 seconds for a read that receives
-/// nothing, and 10 redirects.
+/// The settings are the four timeouts, how many redirects to follow, and
+/// whether to keep cookies. Each timeout is finite: it can be changed but
+/// not turned off. The defaults are 10 seconds to connect, 10 seconds for
+/// the TLS handshake, 30 seconds for the whole request, 30 seconds for a
+/// read that receives nothing, 10 redirects, and no cookie store.
 #[derive(Debug)]
 #[must_use]
 pub struct ClientBuilder {
     timeouts: Timeouts,
     max_redirects: u32,
+    cookie_store: bool,
 }
 
 impl ClientBuilder {
@@ -192,7 +206,23 @@ impl ClientBuilder {
         Self {
             timeouts: Timeouts::default(),
             max_redirects: redirect::DEFAULT_MAX_REDIRECTS,
+            cookie_store: false,
         }
+    }
+
+    /// Whether the client keeps the cookies servers set and sends them
+    /// back (RFC 6265). Defaults to `false`: no cookie is stored or sent
+    /// unless the request sets `Cookie` itself.
+    ///
+    /// The store lives as long as the client and its clones, which share
+    /// it, and is held in memory only. A request that sets its own `Cookie`
+    /// header is sent with that header alone. Domains are checked as
+    /// RFC 6265 §5.3 describes, but without the public suffix list: a
+    /// cookie for a single-label domain such as `com` is refused, while one
+    /// for a multi-label public suffix such as `co.uk` is not.
+    pub fn cookie_store(mut self, enabled: bool) -> Self {
+        self.cookie_store = enabled;
+        self
     }
 
     /// How many redirects a request follows before it fails as
@@ -259,6 +289,7 @@ impl ClientBuilder {
         Client {
             timeouts: self.timeouts,
             max_redirects: self.max_redirects,
+            cookies: self.cookie_store.then(Arc::default),
             pool: Arc::new(Pool::new(self.timeouts, trust)),
             _unwind: NotUnwindSafe::default(),
         }
@@ -304,6 +335,17 @@ mod tests {
     fn builder_records_the_redirect_limit_and_defaults_to_ten() {
         assert_eq!(Client::new().max_redirects, 10);
         assert_eq!(Client::builder().max_redirects(0).build().max_redirects, 0);
+    }
+
+    #[test]
+    fn the_cookie_store_is_off_by_default_and_shared_by_clones() {
+        assert!(Client::new().cookies.is_none());
+        let client = Client::builder().cookie_store(true).build();
+        let clone = client.clone();
+        let (Some(store), Some(cloned)) = (&client.cookies, &clone.cookies) else {
+            panic!("both clients keep cookies");
+        };
+        assert!(std::sync::Arc::ptr_eq(store, cloned));
     }
 
     #[test]

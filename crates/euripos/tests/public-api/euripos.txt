@@ -234,6 +234,7 @@ pub struct euripos::ClientBuilder
 impl euripos::ClientBuilder
 pub fn euripos::ClientBuilder::build(self) -> euripos::Client
 pub fn euripos::ClientBuilder::connect_timeout(self, core::time::Duration) -> Self
+pub fn euripos::ClientBuilder::cookie_store(self, bool) -> Self
 pub fn euripos::ClientBuilder::max_redirects(self, u32) -> Self
 pub fn euripos::ClientBuilder::new() -> Self
 pub fn euripos::ClientBuilder::read_stall_timeout(self, core::time::Duration) -> Self

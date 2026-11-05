@@ -126,3 +126,34 @@ Following is what reqwest, curl's `-L` and every browser do, so a caller replaci
 ### Validated by
 
 `redirect::tests` (every RFC 3986 §5.4 example an HTTP URI can meet, the method rule per status, unfollowed statuses and locations, credential and body-header stripping); `tests/parity/redirect.rs`: `303` and `302`-to-`POST` arrive as a bodiless `GET`, `307` and `308` resend method and body, a `307` with a streaming body is returned, credentials do not reach another origin, a chain past the limit fails as `ErrorKind::Redirect`, and `max_redirects(0)` returns the redirect.
+
+## Cookies
+
+### Problem
+
+Sessions behind a login keep their state in cookies. A caller replacing reqwest's `cookie_store(true)` needs the client to keep what servers set and send it back, including across the redirect a login usually answers with.
+
+### Constraints
+
+- RFC 6265: parsing `Set-Cookie` (§5.2), dates by the algorithm of §5.1.1, domain and path matching (§5.1.3, §5.1.4), the storage model (§5.3) and the `Cookie` header (§5.4). §6.1 asks a store to hold at least 4096 bytes per cookie, 50 per domain and 3000 in all.
+- A store must not let one site set cookies for another, or for a public suffix (§5.3 step 5, which defers to a public suffix list).
+- No `cfg(feature)` on a public item (see "JSON").
+- A plain client sends no cookie it was not given, and the baseline keeps that default.
+
+### Alternatives
+
+1. `ClientBuilder::cookie_store(bool)`, off by default, with an in-house RFC 6265 store shared by the client's clones.
+2. The `cookie_store` crate behind a `cookies` feature, as reqwest does, with a public `CookieStore` trait for custom stores.
+3. A public `Jar` type the caller can seed, read and share between clients.
+
+### Choice
+
+1. `ClientBuilder::cookie_store(bool)`, `false` by default. When on, every response's `Set-Cookie` headers, redirects included, are stored by §5.3, and each request (each hop of a redirect chain) carries the §5.4 `Cookie` header for its URI unless the caller set `Cookie` itself. The store is in memory, lives as long as the client and its clones, and holds at most 50 cookies a domain and 3000 in all, evicting the oldest, and refuses a cookie whose name and value exceed 4096 bytes. Dates parse by §5.1.1, which accepts IMF-fixdate, RFC 850, asctime and the dashed Netscape form; `Max-Age` wins over `Expires`; an expired cookie deletes its stored namesake. `HttpOnly` and `SameSite` are parsed and ignored: they govern scripts and sites, and a client has neither. A `Domain` must domain-match the host that set it, and a single-label one (`com`) is refused.
+
+### Rationale
+
+The store is the RFC's algorithms and a mutex, a few hundred lines with tests, against `cookie_store`'s graph (`url`, `idna`, `publicsuffix`, `time`, `cookie`), most of which is a public suffix list euripos would have to keep current. Without that list, a cookie for a multi-label public suffix such as `co.uk` is accepted, which the builder's documentation says; the single-label check stops the common case, and a client talks to the origins its caller chose, not to arbitrary sites as a browser does, so the cross-site leak a public suffix check prevents needs a hostile site the caller already trusts. A public store (options 2 and 3) is API to keep for features nobody has asked for yet; it can be added beside the switch without breaking it. Off by default keeps the baseline's behaviour and matches reqwest.
+
+### Validated by
+
+`cookies::tests` (every date format to the same instant and invalid dates refused, `Max-Age` precedence and deletion, ignored pairs, domain and path matching and default paths, host-only cookies, domain cookies kept from other and single-label domains, `Secure` and the §5.4 ordering, replacement and expiry, the per-domain limit); `client::tests::the_cookie_store_is_off_by_default_and_shared_by_clones`; `tests/parity/cookies.rs`: a cookie set on a `303` reaches the next hop and a clone's later request, no cookie is kept without the store, and a caller's `Cookie` is sent alone.
