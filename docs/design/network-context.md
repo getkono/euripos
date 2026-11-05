@@ -1,6 +1,6 @@
 # Network context
 
-The network context is what the client knows about the network it is on: an identity for it, and facts about it, every one of which may be `Unknown`. The network-keyed pool (#6), alternative-service and estimator state, and Happy Eyeballs history key on it. This document covers the model, the platform-agnostic monitor that keeps it current, and its Linux and Windows implementations. The public facts are also described in [api.md](api.md), "Network facts".
+The network context is what the client knows about the network it is on: an identity for it, and facts about it, every one of which may be `Unknown`. The network-keyed pool (#6), alternative-service and estimator state, and Happy Eyeballs history key on it. This document covers the model, the platform-agnostic monitor that keeps it current, and its Linux, Windows and Apple implementations. The public facts are also described in [api.md](api.md), "Network facts".
 
 ## Network identity
 
@@ -56,7 +56,7 @@ Consumers and callers adapt to the kind of network (metered, constrained, which 
 
 ### Choice
 
-1. On Linux: `interface()` from the link the route to the internet leaves through; `metering()` from NetworkManager; `constraint()` `Unknown`, since Linux has no low-data mode; `ipv4()` and `ipv6()` `Available` when the kernel routes a public address of that version, `Unavailable` when it does not; `proxy()` `Manual` when `http_proxy`, `https_proxy` or `all_proxy` (either case) is set and not empty, `Direct` otherwise. On Windows, as "Windows monitor" sets out.
+1. On Linux: `interface()` from the link the route to the internet leaves through; `metering()` from NetworkManager; `constraint()` `Unknown`, since Linux has no low-data mode; `ipv4()` and `ipv6()` `Available` when the kernel routes a public address of that version, `Unavailable` when it does not; `proxy()` `Manual` when `http_proxy`, `https_proxy` or `all_proxy` (either case) is set and not empty, `Direct` otherwise. On Windows, as "Windows monitor" sets out, and on macOS and iOS as "Apple monitor" does.
 
 ### Rationale
 
@@ -206,3 +206,45 @@ Coverage gaps, tracked in #51: the hosted runners have one virtual wired adapter
 ### Validated by
 
 On the Windows CI runners (x86_64 and aarch64): `platform::windows::tests::the_host_network_is_named_exactly_when_a_route_exists` (IPv4 routed, a network named, the same one on a second reading, the cost manager open, or the cost `Unknown` where the edition provides no Network List Manager cost interface, failing with `REGDB_E_CLASSNOTREG` or `E_NOINTERFACE` as the hosted Windows Server 2025 runner does), `loopback_routes_through_loopback`, `the_platform_verifier_rejects_an_untrusted_certificate`; `platform::windows::change::tests::both_notifications_register_and_cancel`; `platform::windows::cost::tests::the_host_cost_opens_subscribes_and_reads`; `platform::windows::proxy::tests::a_pac_script_picks_the_hops_per_url` (WinHTTP fetches a PAC script from a loopback server and runs it per URL, then again after a network change), `a_change_under_the_watched_key_wakes_the_watch` (twice, so the re-arm holds), `no_automatic_configuration_is_direct` and `the_host_configuration_reads`. On fixtures: `interfaces_are_classified_by_type_medium_and_hardware`, `cost_levels_and_flags_map_as_documented`, `user_settings_map_to_the_configuration_they_describe`, `a_user_without_settings_falls_back_to_the_machine`, `proxy_lists_parse_in_order`, `a_rotated_ipv6_temporary_address_keeps_the_network`, `a_new_ipv4_address_or_gateway_is_a_new_network`. `crates/euripos/tests/network_facts.rs` reads known IPv4 availability through the public API on Windows.
+
+## Apple monitor
+
+### Problem
+
+On macOS and iOS the system decides which path a new connection takes, and Network.framework's path monitor reports that path: its interfaces, its gateways, and whether it is expensive, constrained (Low Data Mode) or ultra-constrained. Routes are not the model there: the system may bring an interface up on demand (VPN On Demand), and iOS exposes no routing table to an app.
+
+### Constraints
+
+- One implementation on Apple (Principle 2); scope names `nw_path_monitor` for expensive, constrained and ultra-constrained.
+- The same identity and facts as on Linux and Windows.
+- Ultra-constrained exists from macOS and iOS 26; the library must still load on earlier releases.
+- The bindings are the ones [ADR 0003](../adr/0003-apple-network-framework.md) chose.
+
+### Alternatives
+
+For the identity:
+1. The path's first interface (the one traffic leaves through) and the addresses of its gateways (`nw_path_enumerate_gateways`).
+2. The first interface alone.
+3. A routing-table read through `sysctl` (`NET_RT_DUMP`), as on the other platforms.
+
+For ultra-constrained:
+1. Look `nw_path_is_ultra_constrained` up at run time, and report constrained or not from `nw_path_is_constrained` where it is absent.
+2. Link it weakly through the SDK.
+
+### Choice
+
+Option 1 in each. The monitor starts on the monitor's thread and delivers each path on the platform's serial dispatch queue; the handler copies what it needs out of the path and wakes the source, so no Network.framework object outlives the callback. Opening the source waits up to 250 ms for the first path, so the first reading names the network, as on Linux. A path that is not satisfied (unsatisfied, or satisfiable only once something such as VPN On Demand brings an interface up) names no network, and its interface, metering and constraint are `Unknown`. A satisfied path's identity is its first interface's index and its gateways' addresses, sorted; its interface kind is the first interface's type (Wi-Fi, cellular, wired as Ethernet, anything else, such as a VPN's `utun`, as other); expensive is metered and not expensive unmetered; ultra-constrained, then constrained, then neither. `ipv4()` and `ipv6()` are the path's `has_ipv4` and `has_ipv6` in every status. The proxy fact is `Unknown`: the path does not carry it.
+
+### Rationale
+
+The path is what the system will use for the next connection, so reading it, rather than routes (option 3), agrees with what `nw_connection` does by construction, and works on iOS, where the routing table is not available to apps. The interface alone (option 2) would keep one identity across every Wi-Fi network joined through `en0`, which is exactly the switch the pool must see. Gateways stand in for the source address the other platforms key on, which the path does not report; two networks that hand out the same gateway address on the same interface share an identity, as on Linux where they also share the address.
+
+Expensive is the system's own judgement of cost (cellular, and a Wi-Fi network that is a personal hotspot), the meaning `Metered` has on every platform. A path that is not satisfied says nothing about the network it would use, so its flags are `Unknown` rather than a likely value (Principle 4). Looking ultra-constrained up at run time (option 1) keeps the minimum releases where they are; a weak link (option 2) needs an SDK that declares the symbol on every build host, and the hosted runners' Xcode may predate it. A system without the function has no ultra-constrained mode, so constrained or not is then the whole answer.
+
+The path carries no proxy configuration. The system's proxy settings are a CFNetwork dictionary with no change signal on the path; the client's proxy support (#49) is where they will be read, and the fact can be filled from there.
+
+Coverage gaps: the hosted macOS runner and the iOS simulator have one wired or virtual network, no cellular path, no Low Data Mode and no VPN, so the interface kinds, the expensive and constrained mapping and a change of network are tested on fixtures; ultra-constrained is untested on a system that has it. The device lab (#10) measures a real handover.
+
+### Validated by
+
+On the macOS job and the iOS simulator job: `platform::apple::path::tests::the_host_network_is_named_and_its_flags_known` (a satisfied path with IPv4 names a network, the same on a second reading); on fixtures, `a_satisfied_path_reports_its_interface_flags_and_ip_versions`, `ultra_constrained_is_reported_where_the_system_has_it`, `an_unsatisfied_path_names_no_network_and_no_flags`, `the_network_is_the_interface_and_its_gateways`, `socket_addresses_parse_by_family`. `crates/euripos/tests/network_facts.rs` reads known IPv4 availability through the public API on macOS and iOS.
