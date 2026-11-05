@@ -366,6 +366,30 @@ mod tests {
         assert_eq!(constrained.facts().constraint, Constraint::Constrained);
     }
 
+    // The iOS simulator's path is satisfied and reports neither version:
+    // the system has not said which one routes, so neither is unavailable.
+    #[test]
+    fn a_satisfied_path_with_no_ip_version_leaves_both_unknown() {
+        let facts = Reading {
+            ipv4: false,
+            ipv6: false,
+            ..wifi()
+        }
+        .facts();
+        assert!(facts.network.is_some());
+        assert_eq!(facts.ipv4, IpAvailability::Unknown);
+        assert_eq!(facts.ipv6, IpAvailability::Unknown);
+        // One version is enough for the other's absence to be known.
+        let v6_only = Reading {
+            ipv4: false,
+            ipv6: true,
+            ..wifi()
+        }
+        .facts();
+        assert_eq!(v6_only.ipv4, IpAvailability::Unavailable);
+        assert_eq!(v6_only.ipv6, IpAvailability::Available);
+    }
+
     #[test]
     fn an_unsatisfied_path_names_no_network_and_no_flags() {
         for status in [0, 2, 3] {
