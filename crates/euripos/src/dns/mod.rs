@@ -485,6 +485,14 @@ mod tests {
         assert_eq!(zone.queries().len(), MAX_ALIASES + 3);
     }
 
+    // A lookup through the platform's resolver can run on a spawned task.
+    #[test]
+    fn a_platform_lookup_is_send() {
+        fn send<T: Send>(_: &T) {}
+        let resolver = Resolver::default();
+        send(&resolver.lookup(None, "example.com", 443));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_query_that_hangs_times_out_as_unknown() {
         let resolver = Resolver::default();

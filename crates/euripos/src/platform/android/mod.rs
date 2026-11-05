@@ -1,10 +1,14 @@
 //! Android: the default network from `ConnectivityManager`'s callback over
 //! JNI, sockets bound to it with `android_setsocknetwork`, its proxy, and the
-//! platform verifier initialised from the app's `Context`. See
-//! docs/design/android.md.
+//! platform verifier initialised from the app's `Context`, and HTTPS records
+//! queried on that network. See docs/design/android.md and
+//! docs/design/https-svcb.md.
 
+mod dns;
 mod jvm;
 mod proxy;
+
+pub(crate) use dns::query_https;
 
 use std::ffi::c_int;
 use std::io;
