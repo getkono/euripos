@@ -22,12 +22,18 @@ fn facts_are_read_without_a_runtime_and_agree_between_clients() {
 #[tokio::test]
 async fn facts_are_read_inside_a_runtime() {
     let facts = Client::new().network_facts();
-    if cfg!(any(target_os = "linux", target_os = "windows")) {
-        // The Linux and Windows monitors read the system's routes, so
-        // whether IPv4 is routed is known whatever the host's network.
+    if cfg!(any(
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "ios"
+    )) {
+        // The Linux and Windows monitors read the system's routes, and the
+        // Apple one its current path, so whether IPv4 is routed is known
+        // whatever the host's network.
         assert_ne!(facts.ipv4(), IpAvailability::Unknown, "{facts:?}");
     } else {
-        // TODO(#11): Apple; TODO(#12): Android.
+        // TODO(#12): Android.
         assert_eq!(facts.ipv4(), IpAvailability::Unknown, "{facts:?}");
     }
 }
