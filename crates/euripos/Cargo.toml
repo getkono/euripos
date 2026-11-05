@@ -44,9 +44,12 @@ tower-layer = "0.3"
 tower-service = "0.3"
 
 # The Linux network monitor (docs/design/network-context.md): rtnetlink
-# sockets, and NetworkManager's `Metered` over the system D-Bus.
+# sockets, and NetworkManager's `Metered` over the system D-Bus. HTTPS
+# records (docs/design/https-svcb.md) through hickory over the system's
+# resolv.conf, with no DNSSEC and no encrypted transport of its own.
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-core = "0.3"
+hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }
 libc = "0.2"
 netlink-sys = { version = "0.9", default-features = false, features = ["tokio_socket"] }
 zbus = { version = "6", default-features = false, features = ["tokio", "proxy"] }

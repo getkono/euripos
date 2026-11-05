@@ -17,9 +17,21 @@ pub(crate) use android::{bind_to_network, network_source, platform_verifier};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) use apple::{Stream, connect, network_source};
 #[cfg(target_os = "linux")]
-pub(crate) use linux::network_source;
+pub(crate) use linux::{network_source, query_https};
 #[cfg(target_os = "windows")]
 pub(crate) use windows::network_source;
+
+/// Query `name`'s HTTPS records through the platform's resolver
+/// ([`crate::dns`]). Where the platform has no way to query them, there is
+/// no answer, and the origin's records are `Unknown`.
+#[cfg(not(target_os = "linux"))]
+#[allow(
+    clippy::unused_async,
+    reason = "the signature is every platform's; the others query asynchronously"
+)]
+pub(crate) async fn query_https(_name: &str) -> Option<crate::dns::Answer> {
+    None
+}
 
 /// Whether this platform reports the network it is on through
 /// [`network_source`].

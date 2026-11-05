@@ -1,8 +1,11 @@
 //! Linux: the network from rtnetlink, metering from `NetworkManager`, the
-//! proxy from the environment.
+//! proxy from the environment, HTTPS records through hickory.
 
+mod dns;
 mod netlink;
 mod networkmanager;
+
+pub(crate) use dns::query_https;
 
 use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
