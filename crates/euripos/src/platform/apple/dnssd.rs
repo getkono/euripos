@@ -119,11 +119,14 @@ impl Replies {
         }
     }
 
-    /// Take in one reply.
-    fn take(&mut self, flags: u32, error: i32, rdata: &[u8], ttl: u32) {
+    /// Take in one reply, a record of type `kind` in `class`. A record that
+    /// is not an HTTPS record in `IN`, such as a CNAME on the way to one, is
+    /// not kept, as `dns::message::answer` keeps none.
+    fn take(&mut self, flags: u32, error: i32, (kind, class): (u16, u16), rdata: &[u8], ttl: u32) {
         self.more_coming = flags & FLAGS_MORE_COMING != 0;
         match error {
-            NO_ERROR if flags & FLAGS_ADD != 0 => self.records.push(Record {
+            NO_ERROR if flags & FLAGS_ADD == 0 => {}
+            NO_ERROR if kind == TYPE_HTTPS && class == CLASS_IN => self.records.push(Record {
                 rdata: rdata.to_vec(),
                 ttl,
             }),
@@ -142,8 +145,8 @@ unsafe extern "C" fn reply(
     _interface: u32,
     error: i32,
     _name: *const c_char,
-    _kind: u16,
-    _class: u16,
+    kind: u16,
+    class: u16,
     length: u16,
     rdata: *const c_void,
     ttl: u32,
@@ -161,7 +164,7 @@ unsafe extern "C" fn reply(
     };
     // Never unwinds into C: a borrow already held drops the reply.
     if let Ok(mut replies) = replies.try_borrow_mut() {
-        replies.take(flags, error, rdata, ttl);
+        replies.take(flags, error, (kind, class), rdata, ttl);
     }
 }
 
@@ -248,7 +251,11 @@ mod tests {
     use super::{
         FLAGS_ADD, FLAGS_MORE_COMING, NO_ERROR, NO_SUCH_RECORD, Outcome, Replies, query_https,
     };
+    use crate::dns::message::{CLASS_IN, TYPE_HTTPS};
     use crate::dns::{Answer, Record};
+
+    /// An HTTPS record in `IN`.
+    const HTTPS: (u16, u16) = (TYPE_HTTPS, CLASS_IN);
 
     #[test]
     fn records_are_answered_once_no_more_are_coming() {
@@ -256,11 +263,12 @@ mod tests {
         replies.take(
             FLAGS_ADD | FLAGS_MORE_COMING,
             NO_ERROR,
+            HTTPS,
             b"\x00\x01\x00",
             300,
         );
         assert_eq!(replies.outcome(), Outcome::Pending);
-        replies.take(FLAGS_ADD, NO_ERROR, b"\x00\x02\x00", 60);
+        replies.take(FLAGS_ADD, NO_ERROR, HTTPS, b"\x00\x02\x00", 60);
         let records = vec![
             Record {
                 rdata: b"\x00\x01\x00".to_vec(),
@@ -280,22 +288,60 @@ mod tests {
     #[test]
     fn no_such_record_is_no_records_and_other_errors_fail() {
         let mut replies = Replies::default();
-        replies.take(0, NO_SUCH_RECORD, &[], 0);
+        replies.take(0, NO_SUCH_RECORD, HTTPS, &[], 0);
         assert_eq!(
             replies.outcome(),
             Outcome::Answered(Answer::NoRecords { negative_ttl: None })
         );
         let mut replies = Replies::default();
         // `kDNSServiceErr_Timeout`.
-        replies.take(0, -65_568, &[], 0);
+        replies.take(0, -65_568, HTTPS, &[], 0);
         assert_eq!(replies.outcome(), Outcome::Failed);
     }
 
     #[test]
     fn a_removal_is_not_an_answer() {
         let mut replies = Replies::default();
-        replies.take(0, NO_ERROR, b"\x00\x01\x00", 300);
+        replies.take(0, NO_ERROR, HTTPS, b"\x00\x01\x00", 300);
         assert_eq!(replies.outcome(), Outcome::Pending);
+    }
+
+    #[test]
+    fn only_https_records_in_in_are_kept() {
+        let mut replies = Replies::default();
+        // A CNAME on the way to the records, then one in another class.
+        let cname = (5, CLASS_IN);
+        replies.take(
+            FLAGS_ADD | FLAGS_MORE_COMING,
+            NO_ERROR,
+            cname,
+            b"\x03svc\x07example\x00",
+            300,
+        );
+        replies.take(
+            FLAGS_ADD | FLAGS_MORE_COMING,
+            NO_ERROR,
+            (TYPE_HTTPS, 3),
+            b"\x00\x01\x00",
+            300,
+        );
+        replies.take(FLAGS_ADD, NO_ERROR, HTTPS, b"\x00\x02\x00", 60);
+        let records = vec![Record {
+            rdata: b"\x00\x02\x00".to_vec(),
+            ttl: 60,
+        }];
+        assert_eq!(
+            replies.outcome(),
+            Outcome::Answered(Answer::Records(records))
+        );
+
+        let mut replies = Replies::default();
+        replies.take(FLAGS_ADD, NO_ERROR, cname, b"\x03svc\x07example\x00", 300);
+        assert_eq!(
+            replies.outcome(),
+            Outcome::Pending,
+            "a CNAME alone is no answer"
+        );
     }
 
     // mDNSResponder answers or times out; either way the query completes.

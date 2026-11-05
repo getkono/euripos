@@ -138,7 +138,7 @@ The scope names dnssd for HTTPS records. Issue #14 leaves open whether dnssd ret
 
 ### Choice
 
-1. `platform::apple::dnssd::query_https`. A reply that adds a record is kept; `kDNSServiceErr_NoSuchRecord` is no records (no negative TTL is reported, so it is kept for 60 seconds); any other error is no answer. The answer is taken once a reply arrives without `kDNSServiceFlagsMoreComing`. Dropping the lookup deallocates the query, after its socket is deregistered.
+1. `platform::apple::dnssd::query_https`. A reply that adds an HTTPS record in class `IN` is kept, and one that adds any other record, such as a CNAME on the way to it, is not; `kDNSServiceErr_NoSuchRecord` is no records (no negative TTL is reported, so it is kept for 60 seconds); any other error is no answer. The answer is taken once a reply arrives without `kDNSServiceFlagsMoreComing`. Dropping the lookup deallocates the query, after its socket is deregistered.
 
 The open question is settled for this run as **no HTTPS record means `Unknown`**: if some iOS version withholds type 65 from apps, the lookup sees no records, the origin's records are `Unknown`, and connections fall back to A/AAAA exactly as without HTTPS records. Nothing is lost against a client without HTTPS records; the feature is absent on such a version. Device verification, per iOS version, is #58.
 
