@@ -77,7 +77,10 @@ final class NetworkMonitor extends ConnectivityManager.NetworkCallback {
         // Data Saver and a global proxy change without the network changing.
         IntentFilter filter = new IntentFilter(ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED);
         filter.addAction(Proxy.PROXY_CHANGE_ACTION);
-        context.getApplicationContext().registerReceiver(monitor.receiver, filter);
+        // The application's context, so the receiver outlives an activity;
+        // it is null only while the application itself is being created.
+        Context application = context.getApplicationContext();
+        (application != null ? application : context).registerReceiver(monitor.receiver, filter);
         connectivity.registerDefaultNetworkCallback(monitor);
     }
 
