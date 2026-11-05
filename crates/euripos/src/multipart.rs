@@ -193,6 +193,26 @@ mod tests {
         assert_eq!(body.text().await.expect("a full body"), expected);
     }
 
+    #[tokio::test]
+    async fn a_part_takes_its_bodys_media_type_unless_it_sets_its_own() {
+        let json = || Body::from_json(&[1]).expect("serializes");
+        let form = Form::new().part("j", Part::new(json())).part(
+            "k",
+            Part::new(json()).content_type(HeaderValue::from_static("text/plain")),
+        );
+        let boundary = form.boundary().to_owned();
+        let expected = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"j\"\r\n\
+             Content-Type: application/json\r\n\r\n[1]\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"k\"\r\n\
+             Content-Type: text/plain\r\n\r\n[1]\r\n--{boundary}--\r\n"
+        );
+        assert_eq!(
+            Body::from(form).text().await.expect("a full body"),
+            expected
+        );
+    }
+
     #[test]
     fn quotes_and_line_breaks_in_names_are_percent_encoded() {
         assert_eq!(escape("a\"b\r\nc é"), "a%22b%0D%0Ac é");
