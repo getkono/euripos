@@ -4,8 +4,14 @@
 //! The crate is pre-release. [`Client`] is the plain baseline every later
 //! optimization is measured against: HTTP/1.1 and HTTP/2 on hyper, TLS on
 //! rustls with the platform verifier, and four finite timeouts, with no
-//! adaptive behaviour. Requests and responses are the [`http`] crate's types,
-//! re-exported so the versions always match:
+//! adaptive behaviour. On top of it sit the features an application expects
+//! of a reqwest-level client, none of them adaptive: redirects
+//! ([`ClientBuilder::max_redirects`]), a cookie store
+//! ([`ClientBuilder::cookie_store`]), streaming bodies ([`Body::wrap`],
+//! [`Body::chunk`]), JSON ([`Body::from_json`], [`Body::json`]),
+//! `multipart/form-data` ([`Form`]), and response decompression behind the
+//! `gzip`, `brotli` and `zstd` features. Requests and responses are the
+//! [`http`] crate's types, re-exported so the versions always match:
 //!
 //! ```no_run
 //! use std::time::Duration;
