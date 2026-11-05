@@ -414,6 +414,43 @@ mod tests {
         );
     }
 
+    /// Reads `encoded`, arriving as one piece, through a decoded body for
+    /// `coding`, and checks it is 4 MiB of zeros handed out a bounded piece
+    /// at a time, so a caller reading chunks holds no more than that.
+    #[cfg(any(feature = "gzip", feature = "brotli", feature = "zstd"))]
+    async fn check_output_is_bounded(coding: &str, encoded: &'static [u8]) {
+        const MOST: usize = 64 << 10;
+        let decoder = Decoder::for_coding(coding).expect("a decoder in this build");
+        let mut body = Body::decoded(Body::from(encoded), decoder);
+        let mut total = 0;
+        while let Some(chunk) = body.chunk().await.expect("decodes") {
+            assert!(chunk.len() <= MOST, "{coding}: {} bytes", chunk.len());
+            assert!(chunk.iter().all(|&byte| byte == 0), "{coding}");
+            total += chunk.len();
+        }
+        assert_eq!(total, 4 << 20, "{coding}");
+    }
+
+    /// `head -c 4194304 /dev/zero` through `gzip -9`, `brotli -q 11` and
+    /// `zstd -19`: a few bytes that expand a thousandfold or more.
+    #[cfg(feature = "gzip")]
+    #[tokio::test]
+    async fn gzip_output_is_handed_out_a_bounded_piece_at_a_time() {
+        check_output_is_bounded("gzip", include_bytes!("../tests/parity/fixtures/zeros.gz")).await;
+    }
+
+    #[cfg(feature = "brotli")]
+    #[tokio::test]
+    async fn brotli_output_is_handed_out_a_bounded_piece_at_a_time() {
+        check_output_is_bounded("br", include_bytes!("../tests/parity/fixtures/zeros.br")).await;
+    }
+
+    #[cfg(feature = "zstd")]
+    #[tokio::test]
+    async fn zstd_output_is_handed_out_a_bounded_piece_at_a_time() {
+        check_output_is_bounded("zstd", include_bytes!("../tests/parity/fixtures/zeros.zst")).await;
+    }
+
     /// `seq 1 60000` at level 19: several blocks, a window larger than one
     /// block, and a checksum; after a first frame, so frames follow frames.
     #[cfg(feature = "zstd")]
