@@ -37,6 +37,7 @@ mod body;
 mod client;
 mod error;
 mod facts;
+mod json;
 mod marker;
 mod monitor;
 mod platform;

@@ -5,7 +5,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use http::{Request, Response};
+use http::{Request, Response, header};
 
 use crate::marker::NotUnwindSafe;
 use crate::monitor::NetworkMonitor;
@@ -50,7 +50,9 @@ impl Client {
     ///
     /// The request URI is absolute, `http` or `https`. An `https` request
     /// negotiates HTTP/2 or HTTP/1.1 by ALPN; an `http` request uses
-    /// HTTP/1.1. The response body streams as it is read, under the same
+    /// HTTP/1.1. A body that knows its media type, such as
+    /// [`Body::from_json`], sets `Content-Type` unless the request already
+    /// has one. The response body streams as it is read, under the same
     /// total and read-stall timeouts. The returned future owns everything it
     /// needs, so it can be spawned.
     ///
@@ -71,7 +73,14 @@ impl Client {
     where
         B: Into<Body>,
     {
-        let request = request.map(Into::into);
+        let mut request = request.map(Into::into);
+        if let Some(content_type) = request.body_mut().take_content_type()
+            && !request.headers().contains_key(header::CONTENT_TYPE)
+        {
+            request
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, content_type);
+        }
         let client = self.clone();
         async move {
             let total = deadline(client.timeouts.total);

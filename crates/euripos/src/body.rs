@@ -8,6 +8,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::Bytes;
+use http::HeaderValue;
 use http_body::{Body as _, Frame, SizeHint};
 use hyper::body::Incoming;
 use tokio::time::{Instant, Sleep};
@@ -31,6 +32,9 @@ type BoxError = Box<dyn StdError + Send + Sync>;
 /// or [`text`](Body::text).
 pub struct Body {
     inner: Inner,
+    /// The `Content-Type` a request sent with this body carries unless it
+    /// sets its own: set by the constructors that know what they hold.
+    content_type: Option<HeaderValue>,
     _unwind: NotUnwindSafe,
 }
 
@@ -181,8 +185,22 @@ impl Body {
     fn from_inner(inner: Inner) -> Self {
         Self {
             inner,
+            content_type: None,
             _unwind: NotUnwindSafe::default(),
         }
+    }
+
+    /// This body, sent with `Content-Type: content_type` unless the request
+    /// sets its own.
+    pub(crate) fn with_content_type(mut self, content_type: HeaderValue) -> Self {
+        self.content_type = Some(content_type);
+        self
+    }
+
+    /// The `Content-Type` this body's constructor gave it, taken so it is
+    /// applied once.
+    pub(crate) fn take_content_type(&mut self) -> Option<HeaderValue> {
+        self.content_type.take()
     }
 
     /// The next piece of the body, or `None` at its end.
@@ -263,6 +281,9 @@ impl fmt::Debug for Body {
             Inner::Streaming(streaming) => f.field("streaming", &!streaming.done),
             Inner::Wrapped(_) => f.field("wrapped", &true),
         };
+        if let Some(content_type) = &self.content_type {
+            f.field("content_type", content_type);
+        }
         f.finish_non_exhaustive()
     }
 }

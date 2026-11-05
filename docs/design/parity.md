@@ -33,3 +33,34 @@ A request body that is produced while it is sent (a file, a generated stream, an
 ### Validated by
 
 `tests/parity/body.rs`: a wrapped body of unknown length arrives chunked and of exact length with `Content-Length`; a failing source fails the request as `ErrorKind::Body` with its error in the chain; `chunk` yields pieces then `None`; `text` on non-UTF-8 fails as `ErrorKind::Decode`.
+
+## JSON
+
+### Problem
+
+Most API traffic is JSON: a caller should send a value as a JSON body and read a response body into a value without serializing by hand or setting the media type itself.
+
+### Constraints
+
+- RFC 8259: JSON exchanged between systems is UTF-8 (§8.1), and its media type is `application/json` with no `charset` parameter (§11).
+- No `cfg(feature)` on a public item, so a JSON method cannot exist only behind a feature.
+- serde is the ecosystem's serialization trait; its 1.x is stable (C-STABLE).
+
+### Alternatives
+
+1. `Body::from_json(&T) -> Result<Body, Error>` and `Body::json::<T>(self)`, always present, with serde and serde_json as dependencies of every build.
+2. The same methods behind a `json` feature, as reqwest does.
+3. The methods always present but returning an error unless a `json` feature is on.
+4. No JSON helpers: callers serialize into `Vec<u8>` and parse `bytes()` themselves.
+
+### Choice
+
+1. `Body::from_json<T: Serialize + ?Sized>(&T) -> Result<Body, Error>` serializes with serde_json and fails as `ErrorKind::Body` when the value cannot be serialized; a request sent with that body carries `Content-Type: application/json` unless the request sets its own. `Body::json<T: DeserializeOwned>(self) -> Result<T, Error>` reads the body to its end and fails as `ErrorKind::Decode` when it is not JSON that fits `T`. serde (with only `std`) becomes a public dependency.
+
+### Rationale
+
+Option 2 is the `cfg(feature)` on a public item that the API gates forbid and `api:cfg` rejects; option 3 turns a build-time choice into a runtime failure a caller can only find by sending a request. The cost of option 1 is compile time: serde_json's code is generic, so a binary that never calls these methods links none of it, and the `size` job's minimal client is unchanged. The media type travels with the body rather than through a request builder: `Body` is what knows what it holds, and a caller who sets `Content-Type` (for example `application/vnd.api+json`) keeps it. `json` ignores the response's `Content-Type`, because servers mislabel JSON often enough that refusing it would only push callers back to parsing by hand.
+
+### Validated by
+
+`json::tests` (the media type, a map with non-string keys failing as `Body`, a mismatched shape failing as `Decode`); `tests/parity/json.rs`: a JSON body arrives as `application/json` and the response is read back into a value, and a caller's own `Content-Type` is kept.

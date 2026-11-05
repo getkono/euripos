@@ -52,7 +52,7 @@ Requests and responses need a representation that interoperates with the rest of
 
 ### Choice
 
-1. `Client::send<B: Into<Body>>(&self, Request<B>) -> impl Future<Output = Result<Response<Body>, Error>> + Send + 'static`. `Body` implements `http_body::Body<Data = Bytes, Error = euripos::Error>`, is `Send + Sync + Unpin` but neither `UnwindSafe` nor `RefUnwindSafe`, and converts from `Bytes`, `Vec<u8>`, `&'static [u8]`, `String`, `&'static str` and `()`; `Body::empty()` and `Default` give an empty body. The reqwest-parity additions to `Body` (`wrap` for a streaming request body, and the `chunk`, `bytes` and `text` readers) are designed in [parity.md](parity.md).
+1. `Client::send<B: Into<Body>>(&self, Request<B>) -> impl Future<Output = Result<Response<Body>, Error>> + Send + 'static`. `Body` implements `http_body::Body<Data = Bytes, Error = euripos::Error>`, is `Send + Sync + Unpin` but neither `UnwindSafe` nor `RefUnwindSafe`, and converts from `Bytes`, `Vec<u8>`, `&'static [u8]`, `String`, `&'static str` and `()`; `Body::empty()` and `Default` give an empty body. The reqwest-parity additions to `Body` (`wrap` for a streaming request body, `from_json`, and the `chunk`, `bytes`, `text` and `json` readers) are designed in [parity.md](parity.md).
 
 ### Rationale
 
@@ -256,7 +256,7 @@ Against the [checklist](https://rust-lang.github.io/api-guidelines/checklist.htm
 | C-CONV-TRAITS | Holds: `From` into `Body` |
 | C-SEND-SYNC | Holds: `Client`, `Body`, `Error` are `Send + Sync`; recorded in the snapshot |
 | C-GOOD-ERR | Holds: `Error` implements `std::error::Error`, lowercase messages, cause through `source()` |
-| C-NUM-FMT, C-SERDE | Not applicable yet |
+| C-NUM-FMT, C-SERDE | Not applicable yet: no public type is data a caller would serialize; `Body::from_json` and `Body::json` take the caller's serde types |
 | C-DEBUG, C-DEBUG-NONEMPTY | Holds |
 | C-CRATE-DOC, C-EXAMPLE | Holds: crate example sends a request and matches on a timeout kind |
 | C-QUESTION-MARK, C-FAILURE | Holds: `# Errors` and `# Panics` on `send` |
@@ -271,4 +271,4 @@ Against the [checklist](https://rust-lang.github.io/api-guidelines/checklist.htm
 | C-NEWTYPE, C-CUSTOM-TYPE, C-BITFLAG | Holds: enums, not `bool`s, for every fact; `NetworkId` is an opaque newtype |
 | C-GENERIC | Holds: `B: Into<Body>` |
 | C-SEALED, C-STRUCT-PRIVATE, C-NEWTYPE-HIDE, C-STRUCT-BOUNDS | Holds: every struct has private fields; no public traits |
-| C-STABLE, C-PERMISSIVE | Holds: `http` 1.x, `http-body` 1.x and `bytes` 1.x are the only public dependencies; MIT OR Apache-2.0 |
+| C-STABLE, C-PERMISSIVE | Holds: `http` 1.x, `http-body` 1.x, `bytes` 1.x and `serde` 1.x are the only public dependencies; MIT OR Apache-2.0 |
