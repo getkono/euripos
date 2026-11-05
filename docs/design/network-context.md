@@ -1,6 +1,6 @@
 # Network context
 
-The network context is what the client knows about the network it is on: an identity for it, and facts about it, every one of which may be `Unknown`. The network-keyed pool (#6), alternative-service and estimator state, and Happy Eyeballs history key on it. This document covers the model, the platform-agnostic monitor that keeps it current, and its Linux, Windows and Apple implementations. The public facts are also described in [api.md](api.md), "Network facts".
+The network context is what the client knows about the network it is on: an identity for it, and facts about it, every one of which may be `Unknown`. The network-keyed pool (#6), alternative-service and estimator state, and Happy Eyeballs history key on it. This document covers the model, the platform-agnostic monitor that keeps it current, and its Linux, Windows and Apple implementations; the Android one is in [android.md](android.md). The public facts are also described in [api.md](api.md), "Network facts".
 
 ## Network identity
 
@@ -56,7 +56,7 @@ Consumers and callers adapt to the kind of network (metered, constrained, which 
 
 ### Choice
 
-1. On Linux: `interface()` from the link the route to the internet leaves through; `metering()` from NetworkManager; `constraint()` `Unknown`, since Linux has no low-data mode; `ipv4()` and `ipv6()` `Available` when the kernel routes a public address of that version, `Unavailable` when it does not; `proxy()` `Manual` when `http_proxy`, `https_proxy` or `all_proxy` (either case) is set and not empty, `Direct` otherwise. On Windows, as "Windows monitor" sets out, and on macOS and iOS as "Apple monitor" does.
+1. On Linux: `interface()` from the link the route to the internet leaves through; `metering()` from NetworkManager; `constraint()` `Unknown`, since Linux has no low-data mode; `ipv4()` and `ipv6()` `Available` when the kernel routes a public address of that version, `Unavailable` when it does not; `proxy()` `Manual` when `http_proxy`, `https_proxy` or `all_proxy` (either case) is set and not empty, `Direct` otherwise. On Windows, as "Windows monitor" sets out, on macOS and iOS as "Apple monitor" does, and on Android as [android.md](android.md), "Android monitor", does.
 
 ### Rationale
 
@@ -93,7 +93,7 @@ For where the monitor runs:
 
 ### Choice
 
-Option 1 for both. Signals settle when the platform has been quiet for 50 ms, or after 1 s of continuous signals; a new network or a loss is confirmed by a reading 500 ms after the first. A reading on the same network that differs in another fact (metering, say) is published at once. The internal `NetworkMonitor` holds the published facts in a `watch` channel; `Changes::next` folds them into `NetworkEvent::{Changed(NetworkId), FactsChanged, Lost}`. `Client::network_facts` starts the monitor and waits up to 500 ms for its first reading, once per process. The monitor and its events are internal: the pool (#6) is their first consumer.
+Option 1 for both. Signals settle when the platform has been quiet for 50 ms, or after 1 s of continuous signals; a new network or a loss is confirmed by a reading 500 ms after the first. A reading on the same network that differs in another fact (metering, say) is published at once. The internal `NetworkMonitor` holds the published facts in a `watch` channel; `Changes::next` folds them into `NetworkEvent::{Changed(NetworkId), FactsChanged, Resumed, Lost}`. `Resumed` is the end, on the same network, of a block the platform put on this process's traffic, an internal `blocked` fact only Android reports ([android.md](android.md), "Resume after Doze"). `Client::network_facts` starts the monitor and waits up to 500 ms for its first reading, once per process. The monitor and its events are internal: the pool (#6) is their first consumer.
 
 ### Rationale
 
@@ -105,7 +105,7 @@ A thread of its own (where option 2 and 3 tie the monitor to a runtime that may 
 
 ### Validated by
 
-`monitor::tests`, driven by a fake platform under paused tokio time: `a_brief_empty_reading_with_a_signal_back_is_not_a_change` and `a_brief_empty_reading_with_no_signal_back_is_not_a_change` (tailscale#17523), `a_signal_flood_that_changes_nothing_is_not_a_change` (100 000 signals over 10 s, at most 13 readings and no event), `a_brief_other_network_is_not_a_change`, `a_lasting_new_network_is_published_once_confirmed`, `a_lasting_loss_is_published_once_confirmed`, `a_fact_change_on_the_same_network_is_published_without_confirmation`, `the_settler_confirms_only_a_repeated_network`, `events_name_what_changed`, `changes_fold_published_facts_into_events`.
+`monitor::tests`, driven by a fake platform under paused tokio time: `a_brief_empty_reading_with_a_signal_back_is_not_a_change` and `a_brief_empty_reading_with_no_signal_back_is_not_a_change` (tailscale#17523), `a_signal_flood_that_changes_nothing_is_not_a_change` (100 000 signals over 10 s, at most 13 readings and no event), `a_brief_other_network_is_not_a_change`, `a_lasting_new_network_is_published_once_confirmed`, `a_lasting_loss_is_published_once_confirmed`, `a_fact_change_on_the_same_network_is_published_without_confirmation`, `the_settler_confirms_only_a_repeated_network`, `events_name_what_changed`, `the_end_of_a_block_on_the_same_network_is_a_resume`, `a_block_and_its_end_are_published_without_confirmation`, `changes_fold_published_facts_into_events`.
 
 ## Linux monitor
 
