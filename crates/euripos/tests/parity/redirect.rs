@@ -112,23 +112,67 @@ async fn a_307_with_a_streaming_body_is_returned_rather_than_followed() {
     assert_eq!(response.status(), 307);
 }
 
+/// [`describe`], then the `Host` and `Proxy-Authorization` that reached
+/// the final hop.
+fn describe_origin(request: &Received) -> String {
+    let header = |name| {
+        request
+            .headers()
+            .get(name)
+            .map_or("-", |value| value.to_str().expect("ascii"))
+    };
+    format!(
+        "{} host={} proxy-authorization={}",
+        describe(request),
+        header(header::HOST),
+        header(header::PROXY_AUTHORIZATION),
+    )
+}
+
+/// A GET of `/start` on `address` carrying every header a redirect to
+/// another origin drops, with `Host: origin.test`.
+fn with_credentials(address: SocketAddr) -> Request<Body> {
+    Request::get(url(address, "/start"))
+        .header(header::AUTHORIZATION, "Bearer secret")
+        .header(header::PROXY_AUTHORIZATION, "Basic cHJveHk=")
+        .header(header::COOKIE, "session=1")
+        .header(header::HOST, "origin.test")
+        .body(Body::empty())
+        .expect("request")
+}
+
 #[tokio::test]
-async fn credentials_are_not_sent_to_another_origin() {
-    let other = serve(|request: Received| async move { respond(200, describe(&request)) }).await;
+async fn credentials_and_host_are_not_sent_to_another_origin() {
+    let other =
+        serve(|request: Received| async move { respond(200, describe_origin(&request)) }).await;
     let target = url(other, "/end");
     let address = serve(move |_| {
         let target = target.clone();
         async move { redirect(301, &target) }
     })
     .await;
-    let request = Request::get(url(address, "/start"))
-        .header(header::AUTHORIZATION, "Bearer secret")
-        .header(header::COOKIE, "session=1")
-        .body(Body::empty())
-        .expect("request");
     assert_eq!(
-        send(request).await,
-        "GET /end body=\"\" authorization=- cookie=- content-type=-"
+        send(with_credentials(address)).await,
+        format!(
+            "GET /end body=\"\" authorization=- cookie=- content-type=- \
+             host={other} proxy-authorization=-"
+        )
+    );
+}
+
+#[tokio::test]
+async fn credentials_and_host_follow_a_redirect_within_the_origin() {
+    let address = serve(|request: Received| async move {
+        match request.uri().path() {
+            "/start" => redirect(301, "end"),
+            _ => respond(200, describe_origin(&request)),
+        }
+    })
+    .await;
+    assert_eq!(
+        send(with_credentials(address)).await,
+        "GET /end body=\"\" authorization=Bearer secret cookie=session=1 content-type=- \
+         host=origin.test proxy-authorization=Basic cHJveHk="
     );
 }
 

@@ -319,17 +319,30 @@ mod tests {
         let headers = || {
             let mut headers = HeaderMap::new();
             headers.insert(header::AUTHORIZATION, location("Bearer secret"));
+            headers.insert(header::PROXY_AUTHORIZATION, location("Basic cHJveHk="));
             headers.insert(header::COOKIE, location("a=b"));
+            headers.insert(header::HOST, location("a"));
             headers.insert(header::CONTENT_TYPE, location("text/plain"));
             headers.insert(header::ACCEPT, location("*/*"));
             headers
         };
         let from: Uri = "https://a/x".parse().expect("a URI");
-        for (to, kept) in [("https://a:443/y", true), ("http://a/y", false)] {
+        for (to, kept) in [
+            ("https://a:443/y", true),
+            ("http://a/y", false),
+            ("https://b/y", false),
+            ("https://a:8443/y", false),
+        ] {
             let mut stripped = headers();
             strip(&mut stripped, &from, &to.parse().expect("a URI"), true);
-            assert_eq!(stripped.contains_key(header::AUTHORIZATION), kept, "{to}");
-            assert_eq!(stripped.contains_key(header::COOKIE), kept, "{to}");
+            for name in [
+                header::AUTHORIZATION,
+                header::PROXY_AUTHORIZATION,
+                header::COOKIE,
+                header::HOST,
+            ] {
+                assert_eq!(stripped.contains_key(&name), kept, "{name} to {to}");
+            }
             assert!(stripped.contains_key(header::CONTENT_TYPE));
         }
         let mut stripped = headers();
