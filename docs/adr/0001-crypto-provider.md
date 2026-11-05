@@ -96,7 +96,7 @@ The `size (<target>)` jobs of the `size-budget` workflow on every pull request a
 
 ## aws-lc-rs as a second provider
 
-Issue #28. Status: not admitted; re-decided by #60 with the measurements this one could not make.
+Issue #28, open: it is `evidence-gated`, so it is not done until the performance results exist. Status: not admitted for now, on the size measurement below; #60 makes the remaining measurements, and #28 closes only when they decide it.
 
 ### Problem
 
@@ -132,7 +132,7 @@ Handshake cost and bulk throughput need mid-range iOS and Android devices and th
 
 ### Choice
 
-2. aws-lc-rs is not admitted. `deny.toml` keeps banning `aws-lc-rs`, `aws-lc-sys`, `aws-lc-fips-sys` and `rustls-post-quantum`, and the rustls, tokio-rustls, hyper-rustls, quinn and quinn-proto features that pull them in; no `crypto-aws-lc-rs` feature exists and the size budgets are unchanged. #60 measures the rest and either admits it under the scheme above or records that it lost.
+2. aws-lc-rs is not admitted. `deny.toml` keeps banning `aws-lc-rs`, `aws-lc-sys`, `aws-lc-fips-sys` and `rustls-post-quantum`, and the rustls, tokio-rustls, hyper-rustls, quinn and quinn-proto features that pull them in; no `crypto-aws-lc-rs` feature exists and the size budgets are unchanged. #60 measures the rest, and #28 then either admits it under the scheme above or records that it lost.
 
 ### Rationale
 
