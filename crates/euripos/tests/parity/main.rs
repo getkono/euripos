@@ -4,4 +4,5 @@
 
 mod body;
 mod json;
+mod multipart;
 mod server;

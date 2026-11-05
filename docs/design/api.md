@@ -52,7 +52,7 @@ Requests and responses need a representation that interoperates with the rest of
 
 ### Choice
 
-1. `Client::send<B: Into<Body>>(&self, Request<B>) -> impl Future<Output = Result<Response<Body>, Error>> + Send + 'static`. `Body` implements `http_body::Body<Data = Bytes, Error = euripos::Error>`, is `Send + Sync + Unpin` but neither `UnwindSafe` nor `RefUnwindSafe`, and converts from `Bytes`, `Vec<u8>`, `&'static [u8]`, `String`, `&'static str` and `()`; `Body::empty()` and `Default` give an empty body. The reqwest-parity additions to `Body` (`wrap` for a streaming request body, `from_json`, and the `chunk`, `bytes`, `text` and `json` readers) are designed in [parity.md](parity.md).
+1. `Client::send<B: Into<Body>>(&self, Request<B>) -> impl Future<Output = Result<Response<Body>, Error>> + Send + 'static`. `Body` implements `http_body::Body<Data = Bytes, Error = euripos::Error>`, is `Send + Sync + Unpin` but neither `UnwindSafe` nor `RefUnwindSafe`, and converts from `Bytes`, `Vec<u8>`, `&'static [u8]`, `String`, `&'static str` and `()`; `Body::empty()` and `Default` give an empty body. The reqwest-parity additions to `Body` (`wrap` for a streaming request body, `from_json`, `From<Form>` for a `multipart/form-data` body of `Part`s, and the `chunk`, `bytes`, `text` and `json` readers) are designed in [parity.md](parity.md).
 
 ### Rationale
 

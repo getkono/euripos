@@ -1,5 +1,6 @@
 //! The body type requests are sent with and responses are read through.
 
+use std::collections::VecDeque;
 use std::error::Error as StdError;
 use std::fmt;
 use std::future::{Future, poll_fn};
@@ -45,6 +46,8 @@ enum Inner {
     Streaming(Box<Streaming>),
     /// A body streaming from a caller's source.
     Wrapped(Box<dyn http_body::Body<Data = Bytes, Error = BoxError> + Send + Sync + Unpin>),
+    /// Bodies sent one after another; each is dropped when it ends.
+    Chain(VecDeque<Body>),
 }
 
 /// A caller's body, pinned, with its error boxed.
@@ -182,6 +185,11 @@ impl Body {
         Self::from_inner(Inner::Wrapped(Box::new(Boxed(Box::pin(body)))))
     }
 
+    /// A body that sends each of `bodies` in turn.
+    pub(crate) fn chain(bodies: impl IntoIterator<Item = Body>) -> Self {
+        Self::from_inner(Inner::Chain(bodies.into_iter().collect()))
+    }
+
     fn from_inner(inner: Inner) -> Self {
         Self {
             inner,
@@ -280,6 +288,7 @@ impl fmt::Debug for Body {
             Inner::Full(bytes) => f.field("remaining", &bytes.as_ref().map_or(0, Bytes::len)),
             Inner::Streaming(streaming) => f.field("streaming", &!streaming.done),
             Inner::Wrapped(_) => f.field("wrapped", &true),
+            Inner::Chain(bodies) => f.field("chain", bodies),
         };
         if let Some(content_type) = &self.content_type {
             f.field("content_type", content_type);
@@ -338,6 +347,7 @@ impl http_body::Body for Body {
             Inner::Wrapped(body) => Pin::new(body)
                 .poll_frame(cx)
                 .map_err(|error| Error::with_source(ErrorKind::Body, error)),
+            Inner::Chain(bodies) => poll_chain(bodies, cx),
         }
     }
 
@@ -346,6 +356,7 @@ impl http_body::Body for Body {
             Inner::Full(bytes) => bytes.is_none(),
             Inner::Streaming(streaming) => streaming.done,
             Inner::Wrapped(body) => body.is_end_stream(),
+            Inner::Chain(bodies) => bodies.iter().all(Body::is_end_stream),
         }
     }
 
@@ -357,8 +368,51 @@ impl http_body::Body for Body {
             Inner::Streaming(streaming) if streaming.done => SizeHint::with_exact(0),
             Inner::Streaming(streaming) => streaming.incoming.size_hint(),
             Inner::Wrapped(body) => body.size_hint(),
+            Inner::Chain(bodies) => {
+                let mut lower = 0u64;
+                let mut upper = Some(0u64);
+                for hint in bodies.iter().map(Body::size_hint) {
+                    lower = lower.saturating_add(hint.lower());
+                    upper = upper
+                        .zip(hint.upper())
+                        .map(|(sum, more)| sum.saturating_add(more));
+                }
+                let mut sum = SizeHint::new();
+                if let Some(upper) = upper {
+                    sum.set_upper(upper);
+                }
+                sum.set_lower(lower);
+                sum
+            }
         }
     }
+}
+
+/// The next data frame of the first body in `bodies` that has one, dropping
+/// each body as it ends. Trailers inside the chain are dropped: only the
+/// end of the whole chain could carry them.
+fn poll_chain(
+    bodies: &mut VecDeque<Body>,
+    cx: &mut Context<'_>,
+) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
+    while let Some(front) = bodies.front_mut() {
+        match Pin::new(front).poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Ok(data) = frame.into_data() {
+                    return Poll::Ready(Some(Ok(Frame::data(data))));
+                }
+            }
+            Poll::Ready(Some(Err(error))) => {
+                bodies.clear();
+                return Poll::Ready(Some(Err(error)));
+            }
+            Poll::Ready(None) => {
+                bodies.pop_front();
+            }
+            Poll::Pending => return Poll::Pending,
+        }
+    }
+    Poll::Ready(None)
 }
 
 #[cfg(test)]

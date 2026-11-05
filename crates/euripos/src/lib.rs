@@ -40,6 +40,7 @@ mod facts;
 mod json;
 mod marker;
 mod monitor;
+mod multipart;
 mod platform;
 mod pool;
 mod timeout;
@@ -51,6 +52,7 @@ pub use error::{Error, ErrorKind, TimeoutKind};
 pub use facts::{
     Constraint, InterfaceKind, IpAvailability, Metering, NetworkFacts, NetworkId, ProxyConfig,
 };
+pub use multipart::{Form, Part};
 
 /// The [`http`](https://docs.rs/http/1) crate, whose `Request` and `Response`
 /// this client sends and returns.

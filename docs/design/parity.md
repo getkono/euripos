@@ -64,3 +64,34 @@ Option 2 is the `cfg(feature)` on a public item that the API gates forbid and `a
 ### Validated by
 
 `json::tests` (the media type, a map with non-string keys failing as `Body`, a mismatched shape failing as `Decode`); `tests/parity/json.rs`: a JSON body arrives as `application/json` and the response is read back into a value, and a caller's own `Content-Type` is kept.
+
+## Multipart forms
+
+### Problem
+
+File uploads and HTML-style form posts are `multipart/form-data` (RFC 7578): named parts separated by a boundary, each with its own disposition and media type. Building one by hand means choosing a boundary, escaping names and getting the framing right.
+
+### Constraints
+
+- RFC 7578: each part has `Content-Disposition: form-data; name="..."` and optionally a `filename` (§4.2) and a `Content-Type`, `text/plain` when absent (§4.4); names and file names may be UTF-8 (§5.1).
+- RFC 2046 §5.1.1: the boundary is at most 70 characters and must not occur in any part.
+- A part may be large: it streams, like any `Body`.
+- No `cfg(feature)` on a public item (see "JSON").
+
+### Alternatives
+
+1. `Form` and `Part` built in-house over `Body`: no dependency, the parts chained into one streaming body.
+2. A multipart crate (`multer` parses; `common-multipart-rfc7578` and `mpart-async` build) behind a `multipart` feature.
+3. No helper: callers frame the body themselves.
+
+### Choice
+
+1. `Form::new()`, `Form::text(name, value)`, `Form::part(name, Part)` and `Form::boundary()`; `Part::new(impl Into<Body>)`, `Part::file_name(name)` and `Part::content_type(HeaderValue)`; `impl From<Form> for Body`. The body is the parts in order, each head then its body, sent as one stream whose size is exact when every part's is (so HTTP/1.1 sends `Content-Length`), and the request carries `Content-Type: multipart/form-data; boundary=...` unless it sets its own. The boundary is `euripos-` and 32 hexadecimal digits drawn from the standard library's randomly keyed hasher. `"`, CR and LF in a name or file name are percent-encoded, as HTML's form submission does and RFC 7578 §2 allows; other characters, including non-ASCII ones, are sent as UTF-8.
+
+### Rationale
+
+The encoder is about a hundred lines, so a dependency would cost more API, licence and graph review than it saves, and option 2's feature gate is the `cfg(feature)` the API gates reject. A boundary needs to be unguessable to an attacker who controls a part's content, not cryptographically strong: 128 bits from `RandomState`, which the standard library keys from the operating system's randomness, does that without a `rand` or `getrandom` dependency. Checking parts for the boundary (RFC 2046's "must not occur") is impossible for a streaming part without buffering it, so the random boundary is what meets it, as in every streaming encoder. Percent-encoding keeps a name from breaking out of its quoted-string, which is the injection the framing has to prevent.
+
+### Validated by
+
+`multipart::tests` (exact framing and size, escaping, a fresh valid boundary per form, a streaming part leaving the size unknown); `tests/parity/multipart.rs`: a form with a text field and a file part arrives byte for byte with its media type and boundary.
