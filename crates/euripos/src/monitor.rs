@@ -562,6 +562,50 @@ mod tests {
         .await;
     }
 
+    // Doze ends before the signals settle, as when a frozen app thaws: the
+    // reading after them equals the one before the block.
+    #[tokio::test(start_paused = true)]
+    async fn a_block_ended_within_one_settle_window_is_a_resume() {
+        local(async {
+            let (fake, signal, published) = start(on(1));
+            sleep(Duration::from_millis(1)).await;
+            set(
+                &fake,
+                NetworkFacts {
+                    blocked: true,
+                    ..on(1)
+                },
+            );
+            signal.send(()).unwrap();
+            sleep(Duration::from_millis(10)).await;
+            set(&fake, on(1));
+            signal.send(()).unwrap();
+            sleep(Duration::from_secs(10)).await;
+            let published = published.borrow();
+            let resumed = published
+                .windows(2)
+                .filter_map(|pair| NetworkEvent::between(&pair[0], &pair[1]))
+                .any(|event| event == NetworkEvent::Resumed);
+            assert!(resumed, "{published:?}");
+        })
+        .await;
+    }
+
+    // A block and its end both published before the reader reads.
+    #[tokio::test(start_paused = true)]
+    async fn a_block_and_its_end_folded_into_one_change_are_a_resume() {
+        let (tx, rx) = tokio::sync::watch::channel(on(1));
+        let monitor = super::NetworkMonitor { facts: rx };
+        let mut changes = monitor.changes();
+        tx.send_replace(NetworkFacts {
+            blocked: true,
+            ..on(1)
+        });
+        tx.send_replace(on(1));
+        let next = tokio::time::timeout(Duration::from_secs(1), changes.next()).await;
+        assert_eq!(next, Ok(Some(NetworkEvent::Resumed)));
+    }
+
     #[tokio::test]
     async fn changes_fold_published_facts_into_events() {
         let (tx, rx) = tokio::sync::watch::channel(on(1));
