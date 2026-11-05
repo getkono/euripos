@@ -180,7 +180,8 @@ jobs:
       - run: cargo build --workspace --all-targets --locked --target aarch64-apple-ios
       - run: mise run test:ios-sim
 
-  # aarch64 build, and the unit tests run on an x86_64 emulator.
+  # The embedded dex rebuilt from its Java, the aarch64 build, and the unit
+  # tests run on an x86_64 emulator.
   android:
     name: android
     runs-on: ubuntu-24.04
@@ -190,7 +191,15 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          install_args: cargo-binstall cargo:cargo-ndk
+          install_args: cargo-binstall cargo:cargo-ndk java
+      # The committed monitor.dex is what `android:dex` builds from the Java
+      # beside it, with the pinned JDK and SDK packages.
+      - run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;$EURIPOS_ANDROID_PLATFORM" "build-tools;$EURIPOS_ANDROID_BUILD_TOOLS" > /dev/null
+          mise run android:dex
+          git diff --exit-code -- crates/euripos/src/platform/android/monitor.dex \
+            || { echo "::error::monitor.dex is stale; run mise run android:dex and commit it"; exit 1; }
       - run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add aarch64-linux-android x86_64-linux-android
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3

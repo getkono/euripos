@@ -10,6 +10,8 @@ cargo-deny = "0.20.2"
 "cargo:cargo-ndk" = "4.1.2"
 "github:obi1kenobi/cargo-semver-checks" = "0.51.0"
 cargo-binstall = "1.23.0"
+# javac for `android:dex`; the exact build, since the dex is committed.
+java = "temurin-21.0.12+101.0.LTS"
 
 [settings]
 # Install cargo tools from prebuilt binaries where one exists.
@@ -20,6 +22,10 @@ cargo.binstall = true
 EURIPOS_API_NIGHTLY = "nightly-2026-10-22"
 # The Android API floor builds target (issue #12).
 EURIPOS_ANDROID_API = "29"
+# The SDK packages `android:dex` compiles the monitor's Java with, pinned with
+# the JDK below so the committed dex is reproducible.
+EURIPOS_ANDROID_PLATFORM = "android-36"
+EURIPOS_ANDROID_BUILD_TOOLS = "36.0.0"
 
 [tasks.check]
 description = "Every local gate: lint, test, docs and API"
@@ -199,6 +205,25 @@ xcrun simctl boot "$udid" || true
 xcrun simctl bootstatus "$udid" -b
 export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUNNER="xcrun simctl spawn $udid"
 cargo test --workspace --locked --target aarch64-apple-ios-sim
+'''
+
+[tasks."android:dex"]
+description = "Compile the Android monitor's Java into the dex the library embeds"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+sdk="${ANDROID_HOME:?set ANDROID_HOME to an Android SDK}"
+jar="$sdk/platforms/$EURIPOS_ANDROID_PLATFORM/android.jar"
+d8="$sdk/build-tools/$EURIPOS_ANDROID_BUILD_TOOLS/d8"
+dir=crates/euripos/src/platform/android
+out="${CARGO_TARGET_DIR:-target}/android-dex"
+rm -rf "$out"
+mkdir -p "$out/classes"
+javac -source 8 -target 8 -Xlint:all,-options -Werror -bootclasspath "$jar" \
+  -d "$out/classes" "$dir/NetworkMonitor.java"
+find "$out/classes" -name '*.class' | sort > "$out/classes.txt"
+"$d8" --release --min-api "$EURIPOS_ANDROID_API" --lib "$jar" --output "$out" @"$out/classes.txt"
+cp "$out/classes.dex" "$dir/monitor.dex"
 '''
 
 [tasks."test:android"]
