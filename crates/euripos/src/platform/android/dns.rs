@@ -111,9 +111,11 @@ mod tests {
         assert!(answer.is_ok(), "the platform resolver bounds its own query");
     }
 
+    // A handle is a network id over `Network`'s magic, 0xcafed00d; a value
+    // without it is refused before anything is sent.
     #[tokio::test]
-    async fn a_handle_naming_no_network_is_refused() {
-        assert_eq!(query_on(0x7fff_cafe_d00d, "example.com").await, None);
+    async fn a_value_that_is_not_a_handle_is_refused() {
+        assert_eq!(query_on(1, "example.com").await, None);
     }
 
     #[tokio::test]

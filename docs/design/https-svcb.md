@@ -175,7 +175,7 @@ Option 2 is the same resolver behind a JNI call, a Java callback and an `Executo
 
 ### Validated by
 
-`platform::android::dns::tests` on the emulator: a query on the default network that completes, a handle naming no network refused, a name that cannot be sent, and a query dropped mid-flight; the response reading is `dns::message::tests` on every platform. Records from a public origin on a device, over Private DNS, are not exercised by CI.
+`platform::android::dns::tests` on the emulator: a query on the default network that completes, a value that is not a network handle refused, a name that cannot be sent, and a query dropped mid-flight; the response reading is `dns::message::tests` on every platform. Records from a public origin on a device, over Private DNS, are not exercised by CI.
 
 ## Windows
 
