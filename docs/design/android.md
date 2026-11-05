@@ -30,18 +30,20 @@ For the callback's Java:
 
 ### Choice
 
-Option 1 in each. The JVM and `Context` are read from `ndk-context` on first use: by `Client::network_facts`, which starts the monitor, and by the first `https` request, which initialises the verifier. `ndk-context` panics when asked before the app initialised it, and has no way to ask without; the panic is caught, so an app that never initialises it gets `Unknown` facts and an `ErrorKind::Tls` error. Built with `panic = "abort"`, the same app aborts with `android context was not initialized`.
+Option 1 in each. The JVM and `Context` are read from `ndk-context` on first use: by `Client::network_facts`, which starts the monitor, and by the first `https` request, which initialises the verifier. `ndk-context` panics when asked before the app initialised it, and has no way to ask without; the panic is caught, so an app that never initialises it gets `Unknown` facts and an `ErrorKind::Tls` error. Built with `panic = "abort"`, the same app aborts with `android context was not initialized`. The answer is kept for the process's life, a missing JVM included: an app that initialises `ndk-context` only after its first `network_facts` call or `https` request keeps `Unknown` facts, unbound sockets and `ErrorKind::Tls` until it restarts.
 
 `NetworkMonitor.java` beside the platform module is compiled by `mise run android:dex` into `monitor.dex` (about 5 KB), which the library includes. The monitor loads it with an `InMemoryDexClassLoader` whose parent is the app's class loader, binds the class's one native method with `RegisterNatives`, and calls its `start`. The build pins the JDK, the SDK platform and the build-tools, and is reproducible; CI's `android` job rebuilds the dex and fails when the committed one differs from it.
 
 What the embedding app provides:
-- `ndk_context::initialize_android_context(vm, context)` before the first request, with the process's `JavaVM` and a global reference to its `Context`. Apps built on `android-activity` already have it.
+- `ndk_context::initialize_android_context(vm, context)` before the first request or `network_facts` call, with the process's `JavaVM` and a global reference to its `Context`. Apps built on `android-activity` already have it.
 - `android.permission.INTERNET` and `android.permission.ACCESS_NETWORK_STATE` in its manifest. Without the second the monitor does not start and the facts are `Unknown`.
 - rustls-platform-verifier's Kotlin component in its Gradle build, as [that crate's Android section](https://github.com/rustls/rustls-platform-verifier#android) describes. Without it, certificate verification fails as `ErrorKind::Tls`.
 
 ### Rationale
 
 `ndk-context` is the convention Rust on Android already shares, so an app that uses another crate needing the JVM initialises it once for both, and the public API stays the same on every platform (option 2 would put an Android-only function on it). Reflection on `ActivityThread` (option 3) is hidden API that newer releases restrict.
+
+The JVM is looked for once because looking raises `ndk-context`'s panic, and a caught panic still runs the process's panic hook: asking again on every call would hand a crash reporter that installs one a panic per request until the app initialises `ndk-context`. Initialising it before first use is the contract `android-activity` and rustls-platform-verifier already set.
 
 The embedded dex (option 1) is the only way that needs nothing from the app's build: an AAR (option 2) is a second artifact to version alongside the crate, and `build.rs` (option 3) would need a JDK and the Android SDK on every machine that builds an app, not only on the one that changes the Java. Committing the dex costs a binary file in review, which the reproducibility check in CI answers. Polling (option 4) wakes the process periodically, which scope rules out on metered and constrained paths, and still misses changes between polls.
 
@@ -89,7 +91,7 @@ From a report:
 - `network()`: the handle, hashed; `None` with no default network.
 - `interface()`: a VPN is `Other`, as a tunnel is on Linux and Windows; otherwise `TRANSPORT_WIFI` is Wi-Fi, `TRANSPORT_CELLULAR` cellular, `TRANSPORT_ETHERNET` Ethernet, any other transport `Other`.
 - `metering()`: `NOT_METERED` is unmetered, `TEMPORARILY_NOT_METERED` (API 30) temporarily unmetered, and neither metered, as `isActiveNetworkMetered` reads it.
-- `constraint()`: `Constrained` where Data Saver is on for the app and the network is metered; `Unconstrained` otherwise.
+- `constraint()`: `Constrained` where Data Saver is on for the app and the network is metered; `Unknown` while the metering or the Data Saver status is unknown; `Unconstrained` otherwise.
 - `ipv4()` and `ipv6()`: `Available` where `LinkProperties` has a default route of that version, `Unavailable` where it has none.
 - `proxy()`: as "Proxy" below.
 
@@ -105,7 +107,7 @@ Data Saver is the Android form of the user asking apps to limit their traffic, w
 
 ### Validated by
 
-On the emulator: `platform::android::tests::no_default_network_routes_nothing_and_names_nothing`, `a_network_is_named_by_its_handle`, `facts_not_yet_reported_are_unknown`, `transports_map_to_interface_kinds`, `capabilities_map_to_metering`, `data_saver_constrains_metered_networks_only`, `default_routes_map_to_ip_availability`, `a_blocked_network_is_reported_blocked`, `the_proxy_fact_follows_the_reported_settings`. Reports from a device's real callback: #55.
+On the emulator: `platform::android::tests::no_default_network_routes_nothing_and_names_nothing`, `a_network_is_named_by_its_handle`, `facts_not_yet_reported_are_unknown`, `transports_map_to_interface_kinds`, `capabilities_map_to_metering`, `data_saver_constrains_metered_networks_only`, `default_routes_map_to_ip_availability`, `the_end_of_a_block_on_the_same_network_counts_as_a_resume`, `the_proxy_fact_follows_the_reported_settings`. Reports from a device's real callback: #55.
 
 ## Per-network sockets
 
@@ -210,17 +212,24 @@ In Doze and App Standby the platform blocks the app's network traffic. Connectio
 
 ### Alternatives
 
-1. `NetworkCallback.onBlockedStatusChanged` (API 29), reported as an internal `blocked` fact, whose end on the same network the monitor publishes as `NetworkEvent::Resumed`.
+For the signal:
+1. `NetworkCallback.onBlockedStatusChanged` (API 29), whose end on the same network the monitor publishes as `NetworkEvent::Resumed`.
 2. The `ACTION_DEVICE_IDLE_MODE_CHANGED` broadcast.
+
+For how the monitor tells a resume:
+1. A count of ended blocks, kept by the platform module as each report arrives and read with every reading; a reading whose count differs from the one published last is a resume.
+2. A `blocked` state in each reading, compared between two readings.
 
 ### Choice
 
-Option 1. A block and its end are published at once, without the confirmation a new network needs, as any fact on the same network is. The end of a block on another network is that network's `Changed`.
+Option 1 in each. A block ends where a report on the same network clears the blocked status the report before it set, and every report is counted as it arrives. A reading with a new count on the same network is published at once, without the confirmation a new network needs, as any fact on the same network is; readings folded into one change carry the count, so a resume between them is still `Resumed`. The end of a block on another network, or with none, is that network's `Changed`, or `Lost`. The count is internal to the monitor and stays out of `NetworkFacts`, whose `Debug`, `PartialEq` and `Hash` cover only what its getters return.
 
 ### Rationale
 
 The blocked status is the platform's own statement that this app's traffic is blocked, and it covers Doze, App Standby and background restrictions alike, where the idle broadcast (option 2) covers Doze alone and says nothing about this app. Publishing the end as its own event lets the pool tell a resume from a metering change without comparing facts. The pool's response, and the netlab evidence for it, are #16.
 
+A blocked state (option 2) is lost whenever a block and its end fall between two readings: within one 50 ms settle window, as when a frozen app thaws, the reading after the block equals the one before it, and two published readings folded into one change compare unblocked to unblocked. A count only grows, so neither hides it.
+
 ### Validated by
 
-`monitor::tests::the_end_of_a_block_on_the_same_network_is_a_resume` and `a_block_and_its_end_are_published_without_confirmation`; `platform::android::tests::a_blocked_network_is_reported_blocked`. Real Doze: #55.
+`monitor::tests::the_end_of_a_block_on_the_same_network_is_a_resume`, `the_end_of_a_block_is_published_without_confirmation`, `a_block_ended_within_one_settle_window_is_a_resume` and `a_block_and_its_end_folded_into_one_change_are_a_resume`; `platform::android::tests::the_end_of_a_block_on_the_same_network_counts_as_a_resume`. Real Doze: #55.
