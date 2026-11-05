@@ -157,7 +157,9 @@ impl Pool {
                     };
                     // `connection` moved into the lease, which marks an HTTP/1.1
                     // connection unusable if this future is dropped before the
-                    // response arrives.
+                    // response arrives. The stall deadline starts here, before
+                    // the request body is written, as docs/baseline.md
+                    // ("Default timeouts") specifies.
                     let response = until(
                         deadline(read_stall),
                         TimeoutKind::ReadStall,

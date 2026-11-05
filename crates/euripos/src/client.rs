@@ -141,8 +141,14 @@ impl ClientBuilder {
     }
 
     /// How long reading the response may wait while no bytes arrive: for
-    /// its head once the request is sent, and for each later piece of its
+    /// its head once a connection is ready, and for each later piece of its
     /// body. Defaults to 30 seconds.
+    ///
+    /// The wait for the head includes writing the request body, so a request
+    /// whose body takes longer than this to send fails as
+    /// [`TimeoutKind::ReadStall`](crate::TimeoutKind::ReadStall) even when
+    /// [`total_timeout`](Self::total_timeout) allows more; a slow upload
+    /// raises both.
     pub fn read_stall_timeout(mut self, timeout: Duration) -> Self {
         self.timeouts.read_stall = timeout;
         self
