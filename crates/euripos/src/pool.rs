@@ -632,7 +632,7 @@ mod tests {
     use http::{Request, Uri, header};
     use std::future::{Ready, ready};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::task::{Context, Poll};
     use tower_service::Service;
 
@@ -670,6 +670,53 @@ mod tests {
         let second = pool.call(());
         drop(first);
         assert!(second.await.is_ok());
+    }
+
+    /// A connection that can be closed, numbered by the order it was made.
+    #[derive(Clone)]
+    struct Closable {
+        number: usize,
+        closed: Arc<AtomicBool>,
+    }
+
+    /// Makes a [`Closable`], counting how many it made.
+    #[derive(Clone, Default)]
+    struct MakesClosable {
+        made: Arc<AtomicUsize>,
+    }
+
+    impl Service<()> for MakesClosable {
+        type Response = Closable;
+        type Error = BoxError;
+        type Future = Ready<Result<Closable, BoxError>>;
+
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, (): ()) -> Self::Future {
+            ready(Ok(Closable {
+                number: self.made.fetch_add(1, Ordering::SeqCst),
+                closed: Arc::default(),
+            }))
+        }
+    }
+
+    /// A shared HTTP/2 connection that closed is replaced at the next
+    /// checkout, even when another request held the lock while the pool was
+    /// pruning closed connections.
+    #[tokio::test]
+    #[ignore = "red until #39 is fixed: the prune skips a closed connection while the lock is held"]
+    async fn a_closed_h2_connection_is_replaced_even_when_the_lock_was_held() {
+        let mut pool = shared(MakesClosable::default());
+        let first = pool.call(()).await.expect("first connection");
+        first.closed.store(true, Ordering::SeqCst);
+        let held = pool.made.clone().lock_owned().await;
+        pool.retain(|connection| !connection.closed.load(Ordering::SeqCst));
+        drop(held);
+        let second = pool.call(()).await.expect("second connection");
+        assert!(!second.closed.load(Ordering::SeqCst));
+        assert_eq!(second.number, 1);
     }
 
     #[test]
