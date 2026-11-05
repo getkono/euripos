@@ -4,11 +4,21 @@
 use euripos::{Client, IpAvailability};
 
 #[test]
-fn a_network_is_named_exactly_when_a_route_to_the_internet_is_known() {
+fn a_network_is_named_exactly_when_a_route_to_the_internet_is_not_ruled_out() {
     let facts = Client::new().network_facts();
     let routed =
         facts.ipv4() == IpAvailability::Available || facts.ipv6() == IpAvailability::Available;
-    assert_eq!(facts.network().is_some(), routed, "{facts:?}");
+    let unrouted =
+        facts.ipv4() == IpAvailability::Unavailable && facts.ipv6() == IpAvailability::Unavailable;
+    // Where both versions are known, a network is named exactly when one
+    // routes. A platform that names a network without saying which version
+    // routes (the iOS simulator) leaves both unknown.
+    if routed {
+        assert!(facts.network().is_some(), "{facts:?}");
+    }
+    if unrouted {
+        assert!(facts.network().is_none(), "{facts:?}");
+    }
 }
 
 #[test]
@@ -22,7 +32,10 @@ fn facts_are_read_without_a_runtime_and_agree_between_clients() {
 #[tokio::test]
 async fn facts_are_read_inside_a_runtime() {
     let facts = Client::new().network_facts();
-    if cfg!(any(
+    if cfg!(target_abi = "sim") {
+        // The iOS simulator's path reports no IP version.
+        assert_ne!(facts.ipv4(), IpAvailability::Unavailable, "{facts:?}");
+    } else if cfg!(any(
         target_os = "linux",
         target_os = "windows",
         target_os = "macos",

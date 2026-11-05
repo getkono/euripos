@@ -163,9 +163,14 @@ impl Reading {
 
     /// The facts this reading reports.
     fn facts(&self) -> NetworkFacts {
+        // A satisfied path routes traffic, so one reporting neither version
+        // (the iOS simulator's) has not said which routes.
+        let silent = self.status == ffi::NW_PATH_STATUS_SATISFIED && !self.ipv4 && !self.ipv6;
         let availability = |has| {
             if has {
                 IpAvailability::Available
+            } else if silent {
+                IpAvailability::Unknown
             } else {
                 IpAvailability::Unavailable
             }
@@ -465,8 +470,9 @@ mod tests {
         assert_eq!(unsafe { ip_address(std::ptr::null()) }, None);
     }
 
-    // The host's own path: the hosted macOS runners and the iOS simulator
-    // are on a network with IPv4, which the monitor names.
+    // The host's own path: the hosted macOS runners are on a network with
+    // IPv4, which the monitor names. The iOS simulator's path reports no IP
+    // version, so there IPv4 is not reported unavailable.
     #[test]
     fn the_host_network_is_named_and_its_flags_known() {
         std::thread::spawn(|| {
@@ -478,7 +484,11 @@ mod tests {
                 let mut source = network_source().await.unwrap();
                 let facts = source.observe();
                 assert!(facts.network.is_some(), "{facts:?}");
-                assert_eq!(facts.ipv4, IpAvailability::Available, "{facts:?}");
+                if cfg!(target_abi = "sim") {
+                    assert_ne!(facts.ipv4, IpAvailability::Unavailable, "{facts:?}");
+                } else {
+                    assert_eq!(facts.ipv4, IpAvailability::Available, "{facts:?}");
+                }
                 assert_ne!(facts.interface, InterfaceKind::Unknown);
                 assert_ne!(facts.metering, Metering::Unknown);
                 assert_ne!(facts.constraint, Constraint::Unknown);
