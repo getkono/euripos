@@ -343,8 +343,12 @@ impl Resolver {
             self.network = network;
         }
         let script = auto.script.as_deref().map(HSTRING::from);
+        // The user's default credentials are never offered to the server
+        // the script comes from: WPAD lets whoever answers discovery on the
+        // network name that server. A script behind authentication fails
+        // to resolve.
         let mut options = WINHTTP_AUTOPROXY_OPTIONS {
-            fAutoLogonIfChallenged: BOOL::from(true),
+            fAutoLogonIfChallenged: BOOL::from(false),
             ..Default::default()
         };
         if auto.detect {
