@@ -95,3 +95,34 @@ The encoder is about a hundred lines, so a dependency would cost more API, licen
 ### Validated by
 
 `multipart::tests` (exact framing and size, escaping, a fresh valid boundary per form, a streaming part leaving the size unknown); `tests/parity/multipart.rs`: a form with a text field and a file part arrives byte for byte with its media type and boundary.
+
+## Redirects
+
+### Problem
+
+Servers move resources and answer POSTs with `303 See Other`. A plain hyper client returns every `3xx` to the caller, who then has to resolve `Location`, pick the method, decide what to resend and avoid leaking credentials to another origin.
+
+### Constraints
+
+- RFC 9110 §15.4: a client may follow `301`, `302`, `303`, `307` and `308` automatically. `303` is fetched with `GET` (§15.4.4); `307` and `308` keep the method and body (§15.4.8, §15.4.9); `301` and `302` may turn `POST` into `GET` (§15.4.2, §15.4.3). When it follows, it should remove headers it generated, consider removing `Authorization` and `Cookie`, and remove headers the method change invalidates.
+- RFC 3986 §5: `Location` is a URI reference resolved against the request's URI.
+- A streaming request body cannot be sent twice.
+- The total timeout bounds the whole request, so it bounds the whole chain.
+
+### Alternatives
+
+1. Follow by default, up to `ClientBuilder::max_redirects(u32)` (default 10, `0` to follow none), with `ErrorKind::Redirect` past the limit.
+2. A policy type (`Policy::none()`, `Policy::limited(n)`, `Policy::custom(closure)`), as reqwest has.
+3. Never follow: leave redirects to the caller, as hyper does.
+
+### Choice
+
+1. `301`, `302`, `303`, `307` and `308` with an `http` or `https` `Location` are followed, `Location` resolved by RFC 3986 §5.2 (its fragment dropped, since the request URI has none). `303`, and `301` or `302` to a `POST`, become a `GET` (`HEAD` stays `HEAD` on `303`) with no body and without the `Content-*` and `Transfer-Encoding` headers; the others resend the method and body. A body held in memory (bytes, JSON, a form of in-memory parts) is copied before each hop that may need it; a streaming one cannot be, so the `307` or `308` that would need it is returned as the response. When the scheme, host or port changes, `Authorization`, `Proxy-Authorization`, `Cookie` and `Host` are dropped. `300`, `304`, `305`, `306`, a missing `Location`, and one that is not `http` or `https` are returned as the response. More than `max_redirects` hops fail as `ErrorKind::Redirect`; `max_redirects(0)` returns the first redirect as it is. Each hop's response body is dropped unread, and the whole chain runs under the one total timeout.
+
+### Rationale
+
+Following is what reqwest, curl's `-L` and every browser do, so a caller replacing reqwest expects it; the limit of 10 is reqwest's default and bounds a redirect loop. One integer covers reqwest's `none` and `limited` policies; a custom policy (option 2) is a public trait or closure type to keep stable, and nobody has asked for it. The `ClientBuilder` gains the knob because the right limit is the caller's (an API that never redirects wants `0`); api.md's Configuration table records it. Dropping credentials on an origin change is the safe reading of §15.4's "consider removing": a token for one origin must not reach another, and a cookie the store generated is regenerated for the new origin ("Cookies"). Downgrading `https` to `http` is followed, as reqwest and curl do, with credentials dropped since the origin changed. Dropping an intermediate body unread closes an HTTP/1.1 connection rather than reusing it; redirect bodies are small and rare enough that draining them is not worth a new wait. A non-ASCII `Location` is returned rather than percent-encoded: no server in the tests sends one, and RFC 9110 requires ASCII.
+
+### Validated by
+
+`redirect::tests` (every RFC 3986 §5.4 example an HTTP URI can meet, the method rule per status, unfollowed statuses and locations, credential and body-header stripping); `tests/parity/redirect.rs`: `303` and `302`-to-`POST` arrive as a bodiless `GET`, `307` and `308` resend method and body, a `307` with a streaming body is returned, credentials do not reach another origin, a chain past the limit fails as `ErrorKind::Redirect`, and `max_redirects(0)` returns the redirect.

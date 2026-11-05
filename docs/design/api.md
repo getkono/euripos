@@ -82,7 +82,7 @@ A caller deciding what to do about a failure needs to know what failed, not whic
 
 ### Choice
 
-1. `ErrorKind::{Connect, Tls, Timeout(TimeoutKind), Protocol, NetworkChanged, Cancelled}`, with `Body` and `Decode` added for the bodies [parity.md](parity.md) designs, and `TimeoutKind::{Connect, Tls, Total, ReadStall}`, both `#[non_exhaustive]`, `Copy + Eq + Hash`. `Display` is a lowercase message with no trailing punctuation that names the kind (`"read timed out"`) and never repeats the source. No `is_retryable`-style predicate ships.
+1. `ErrorKind::{Connect, Tls, Timeout(TimeoutKind), Protocol, NetworkChanged, Cancelled}`, with `Body`, `Decode` and `Redirect` added for the bodies and redirects [parity.md](parity.md) designs, and `TimeoutKind::{Connect, Tls, Total, ReadStall}`, both `#[non_exhaustive]`, `Copy + Eq + Hash`. `Display` is a lowercase message with no trailing punctuation that names the kind (`"read timed out"`) and never repeats the source. No `is_retryable`-style predicate ships.
 
 ### Rationale
 
@@ -179,9 +179,15 @@ Every knob is API surface to keep and a default a caller may get wrong. Scope Pr
 | `total_timeout` | The caller's own deadline for one request; the only bound on a slow but live transfer |
 | `read_stall_timeout` | reqwest has no low-speed/stall timeout ([discussion #1776](https://github.com/seanmonstar/reqwest/discussions/1776)); transfers hang after a network switch ([#1775](https://github.com/seanmonstar/reqwest/discussions/1775)) |
 
+The reqwest-parity features (#8) add the knobs whose right value only the caller knows, each designed in [parity.md](parity.md):
+
+| Knob | Evidence |
+|---|---|
+| `max_redirects` (default 10) | reqwest's redirect policy; an API client that must see every `3xx` sets `0` ([parity.md](parity.md), "Redirects") |
+
 ### Rationale
 
-Each of the four bounds a distinct failure the scope names, and each has a remedy only the caller knows (a long upload needs a longer total). An unbounded request is the reqwest gap the scope lists, so disabling one (option 2) is not offered: a caller who needs a very long bound sets one. Every other knob waits for its evidence.
+Each of the four timeouts bounds a distinct failure the scope names, and each has a remedy only the caller knows (a long upload needs a longer total). An unbounded request is the reqwest gap the scope lists, so disabling one (option 2) is not offered: a caller who needs a very long bound sets one. Every other knob waits for its evidence.
 
 ### Validated by
 

@@ -10,18 +10,20 @@ use http::{Request, Response, header};
 use crate::marker::NotUnwindSafe;
 use crate::monitor::NetworkMonitor;
 use crate::pool::{Dst, Pool};
+use crate::redirect;
 use crate::timeout::{Timeouts, deadline, until};
 use crate::tls::Trust;
-use crate::{Body, Error, NetworkFacts, TimeoutKind};
+use crate::{Body, Error, ErrorKind, NetworkFacts, TimeoutKind};
 
 /// An HTTP client.
 ///
 /// Build one with [`Client::new`] for the defaults or [`Client::builder`] to
-/// change a timeout. A `Client` is cheap to clone and is meant to be shared:
+/// change a setting. A `Client` is cheap to clone and is meant to be shared:
 /// clones use the same connections.
 #[derive(Clone)]
 pub struct Client {
     timeouts: Timeouts,
+    max_redirects: u32,
     pool: Arc<Pool>,
     _unwind: NotUnwindSafe,
 }
@@ -30,6 +32,7 @@ impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Client")
             .field("timeouts", &self.timeouts)
+            .field("max_redirects", &self.max_redirects)
             .finish_non_exhaustive()
     }
 }
@@ -52,15 +55,18 @@ impl Client {
     /// negotiates HTTP/2 or HTTP/1.1 by ALPN; an `http` request uses
     /// HTTP/1.1. A body that knows its media type, such as
     /// [`Body::from_json`], sets `Content-Type` unless the request already
-    /// has one. The response body streams as it is read, under the same
-    /// total and read-stall timeouts. The returned future owns everything it
-    /// needs, so it can be spawned.
+    /// has one. Redirects are followed as
+    /// [`ClientBuilder::max_redirects`] describes, and the response is the
+    /// last one in the chain. The response body streams as it is read, under
+    /// the same total and read-stall timeouts. The returned future owns
+    /// everything it needs, so it can be spawned.
     ///
     /// # Errors
     ///
     /// Resolves to an [`Error`] whose [`kind`](Error::kind) says whether the
-    /// connection, the TLS handshake, a timeout, the protocol or a network
-    /// change failed the request, or that it was cancelled. A URI with no
+    /// connection, the TLS handshake, a timeout, the protocol, a network
+    /// change, the request body or too many redirects failed the request, or
+    /// that it was cancelled. A URI with no
     /// `http` or `https` origin fails as [`ErrorKind::Connect`](crate::ErrorKind::Connect).
     ///
     /// # Panics
@@ -81,14 +87,71 @@ impl Client {
                 .headers_mut()
                 .insert(header::CONTENT_TYPE, content_type);
         }
-        let client = self.clone();
-        async move {
-            let total = deadline(client.timeouts.total);
-            let dst = Dst::from_uri(request.uri())?;
+        self.clone().execute(request)
+    }
+
+    /// Sends `request`, following redirects, under one total timeout.
+    async fn execute(self, request: Request<Body>) -> Result<Response<Body>, Error> {
+        let total = deadline(self.timeouts.total);
+        let read_stall = self.timeouts.read_stall;
+        let (parts, mut body) = request.into_parts();
+        let http::request::Parts {
+            mut method,
+            mut uri,
+            version,
+            mut headers,
+            extensions,
+            ..
+        } = parts;
+        let mut extensions = Some(extensions);
+        let mut redirects = 0;
+        loop {
+            // A body is copied only while a redirect could need it again.
+            let replay = if self.max_redirects > redirects {
+                body.try_clone()
+            } else {
+                None
+            };
+            let mut request = Request::new(body);
+            *request.method_mut() = method.clone();
+            *request.uri_mut() = uri.clone();
+            *request.version_mut() = version;
+            *request.headers_mut() = headers.clone();
+            if let Some(extensions) = extensions.take() {
+                *request.extensions_mut() = extensions;
+            }
+            let dst = Dst::from_uri(&uri)?;
             let (response, lease) =
-                until(total, TimeoutKind::Total, client.pool.send(dst, request)).await?;
-            let read_stall = client.timeouts.read_stall;
-            Ok(response.map(|incoming| Body::streaming(incoming, lease, read_stall, total)))
+                until(total, TimeoutKind::Total, self.pool.send(dst, request)).await?;
+            let response =
+                response.map(|incoming| Body::streaming(incoming, lease, read_stall, total));
+            if self.max_redirects == 0 {
+                return Ok(response);
+            }
+            let Some(next) = redirect::follow(
+                response.status(),
+                response.headers().get(header::LOCATION),
+                &method,
+                &uri,
+            ) else {
+                return Ok(response);
+            };
+            if redirects == self.max_redirects {
+                return Err(Error::new(ErrorKind::Redirect));
+            }
+            body = if next.keep_body {
+                // A body that cannot be sent again ends the chain here.
+                let Some(replay) = replay else {
+                    return Ok(response);
+                };
+                replay
+            } else {
+                Body::empty()
+            };
+            redirects += 1;
+            redirect::strip(&mut headers, &uri, &next.uri, next.keep_body);
+            method = next.method;
+            uri = next.uri;
         }
     }
 
@@ -111,22 +174,42 @@ impl Default for Client {
 
 /// Builds a [`Client`].
 ///
-/// The only settings are the four timeouts. Each is finite: a timeout can be
-/// changed but not turned off. The defaults are 10 seconds to connect,
-/// 10 seconds for the TLS handshake, 30 seconds for the whole request and
-/// 30 seconds for a read that receives nothing.
+/// The settings are the four timeouts and how many redirects to follow.
+/// Each timeout is finite: it can be changed but not turned off. The
+/// defaults are 10 seconds to connect, 10 seconds for the TLS handshake,
+/// 30 seconds for the whole request, 30 seconds for a read that receives
+/// nothing, and 10 redirects.
 #[derive(Debug)]
 #[must_use]
 pub struct ClientBuilder {
     timeouts: Timeouts,
+    max_redirects: u32,
 }
 
 impl ClientBuilder {
-    /// A builder that starts from the default timeouts.
+    /// A builder that starts from the default settings.
     pub fn new() -> Self {
         Self {
             timeouts: Timeouts::default(),
+            max_redirects: redirect::DEFAULT_MAX_REDIRECTS,
         }
+    }
+
+    /// How many redirects a request follows before it fails as
+    /// [`ErrorKind::Redirect`](crate::ErrorKind::Redirect). Defaults to 10;
+    /// `0` follows none, and returns each redirect response as it is.
+    ///
+    /// A `301`, `302`, `303`, `307` or `308` response with an `http` or
+    /// `https` `Location` is followed (RFC 9110 §15.4). `303`, and `301` or
+    /// `302` to a `POST`, are followed with a `GET` and no body; the others
+    /// resend the request as it was, unless its body streams and cannot be
+    /// sent again, when the redirect response is returned. When the origin
+    /// changes, `Authorization`, `Proxy-Authorization`, `Cookie` and `Host`
+    /// are not sent to it. The whole chain runs under one
+    /// [`total_timeout`](Self::total_timeout).
+    pub fn max_redirects(mut self, max: u32) -> Self {
+        self.max_redirects = max;
+        self
     }
 
     /// How long establishing the transport connection may take, from
@@ -175,6 +258,7 @@ impl ClientBuilder {
     fn build_with(self, trust: Trust) -> Client {
         Client {
             timeouts: self.timeouts,
+            max_redirects: self.max_redirects,
             pool: Arc::new(Pool::new(self.timeouts, trust)),
             _unwind: NotUnwindSafe::default(),
         }
@@ -214,6 +298,12 @@ mod tests {
         assert_eq!(client.timeouts.tls, Duration::from_secs(2));
         assert_eq!(client.timeouts.total, Duration::from_secs(3));
         assert_eq!(Client::new().timeouts, Timeouts::default());
+    }
+
+    #[test]
+    fn builder_records_the_redirect_limit_and_defaults_to_ten() {
+        assert_eq!(Client::new().max_redirects, 10);
+        assert_eq!(Client::builder().max_redirects(0).build().max_redirects, 0);
     }
 
     #[test]

@@ -30,6 +30,7 @@ pub euripos::ErrorKind::Connect
 pub euripos::ErrorKind::Decode
 pub euripos::ErrorKind::NetworkChanged
 pub euripos::ErrorKind::Protocol
+pub euripos::ErrorKind::Redirect
 pub euripos::ErrorKind::Timeout(euripos::TimeoutKind)
 pub euripos::ErrorKind::Tls
 impl core::clone::Clone for euripos::ErrorKind
@@ -233,6 +234,7 @@ pub struct euripos::ClientBuilder
 impl euripos::ClientBuilder
 pub fn euripos::ClientBuilder::build(self) -> euripos::Client
 pub fn euripos::ClientBuilder::connect_timeout(self, core::time::Duration) -> Self
+pub fn euripos::ClientBuilder::max_redirects(self, u32) -> Self
 pub fn euripos::ClientBuilder::new() -> Self
 pub fn euripos::ClientBuilder::read_stall_timeout(self, core::time::Duration) -> Self
 pub fn euripos::ClientBuilder::tls_timeout(self, core::time::Duration) -> Self

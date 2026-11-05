@@ -43,6 +43,7 @@ mod monitor;
 mod multipart;
 mod platform;
 mod pool;
+mod redirect;
 mod timeout;
 mod tls;
 

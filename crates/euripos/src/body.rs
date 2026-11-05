@@ -185,6 +185,23 @@ impl Body {
         Self::from_inner(Inner::Wrapped(Box::new(Boxed(Box::pin(body)))))
     }
 
+    /// A copy of this body as it is now, when it can be sent again: one
+    /// held in memory can, one that streams from a connection or a caller's
+    /// source cannot.
+    pub(crate) fn try_clone(&self) -> Option<Self> {
+        let inner = match &self.inner {
+            Inner::Full(bytes) => Inner::Full(bytes.clone()),
+            Inner::Chain(bodies) => {
+                Inner::Chain(bodies.iter().map(Body::try_clone).collect::<Option<_>>()?)
+            }
+            Inner::Streaming(_) | Inner::Wrapped(_) => return None,
+        };
+        Some(Self {
+            content_type: self.content_type.clone(),
+            ..Self::from_inner(inner)
+        })
+    }
+
     /// A body that sends each of `bodies` in turn.
     pub(crate) fn chain(bodies: impl IntoIterator<Item = Body>) -> Self {
         Self::from_inner(Inner::Chain(bodies.into_iter().collect()))
@@ -458,5 +475,16 @@ mod tests {
     fn body_is_send_sync_and_unpin() {
         fn assert_bounds<T: Send + Sync + Unpin + 'static>() {}
         assert_bounds::<Body>();
+    }
+
+    #[test]
+    fn bodies_in_memory_clone_and_streaming_ones_do_not() {
+        let chain = Body::chain([Body::from("a"), Body::from("b")]);
+        let copy = chain.try_clone().expect("a chain of full bodies clones");
+        assert_eq!(frames(copy), [Bytes::from("a"), Bytes::from("b")]);
+        assert_eq!(chain.size_hint().exact(), Some(2));
+        let wrapped = Body::wrap(Body::from("c"));
+        assert!(wrapped.try_clone().is_none());
+        assert!(Body::chain([wrapped]).try_clone().is_none());
     }
 }

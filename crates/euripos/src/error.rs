@@ -83,6 +83,10 @@ pub enum ErrorKind {
     /// for: it was not UTF-8 text or the expected JSON, or its content
     /// coding was corrupt.
     Decode,
+    /// The server redirected the request more times than the client
+    /// follows, set by
+    /// [`ClientBuilder::max_redirects`](crate::ClientBuilder::max_redirects).
+    Redirect,
 }
 
 impl fmt::Display for ErrorKind {
@@ -96,6 +100,7 @@ impl fmt::Display for ErrorKind {
             Self::Cancelled => f.write_str("request cancelled"),
             Self::Body => f.write_str("request body failed"),
             Self::Decode => f.write_str("response body could not be decoded"),
+            Self::Redirect => f.write_str("too many redirects"),
         }
     }
 }
