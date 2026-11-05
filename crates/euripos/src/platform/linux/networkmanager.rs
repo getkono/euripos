@@ -116,14 +116,23 @@ mod tests {
 
     // The owner-tracking path, against a name this test owns on the session
     // bus: the system bus does not let an unprivileged process own a name.
+    // CI starts a session bus for every Linux job that runs tests, so there a
+    // missing bus fails the test instead of skipping it.
     #[tokio::test]
     async fn metering_is_answered_with_no_owner_and_unknown_once_the_owner_leaves() {
-        let (Ok(watcher), Ok(owner)) = (
+        let (watcher, owner) = match (
             zbus::Connection::session().await,
             zbus::Connection::session().await,
-        ) else {
-            eprintln!("skipped: no session bus");
-            return;
+        ) {
+            (Ok(watcher), Ok(owner)) => (watcher, owner),
+            (Err(error), _) | (_, Err(error)) => {
+                assert!(
+                    std::env::var_os("CI").is_none(),
+                    "no session bus in CI: {error}"
+                );
+                eprintln!("skipped: no session bus: {error}");
+                return;
+            }
         };
         let name = format!("org.euripos.Test.P{}", std::process::id());
         let tx = Arc::new(watch::channel(Metering::Metered).0);

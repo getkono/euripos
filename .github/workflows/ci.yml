@@ -39,7 +39,8 @@ jobs:
           install_args: cargo-binstall cargo-deny cargo:cargo-public-api cargo:cargo-ndk
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: mise run check
+      # A session bus for the D-Bus tests, which fail without one under CI.
+      - run: dbus-run-session -- mise run check
 
   # cargo-semver-checks against the commit this change is based on.
   semver:
@@ -145,8 +146,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          # A session bus for the D-Bus tests, which fail without one under CI.
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, session: dbus-run-session -- }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, session: dbus-run-session -- }
           - { os: macos-15, target: aarch64-apple-darwin }
           - { os: windows-2025, target: x86_64-pc-windows-msvc }
           - { os: windows-11-arm, target: aarch64-pc-windows-msvc }
@@ -159,7 +161,7 @@ jobs:
           install: false
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: mise run test
+      - run: ${{ matrix.session }} mise run test
 
   # Device build, and the unit tests run on a booted simulator.
   ios:
