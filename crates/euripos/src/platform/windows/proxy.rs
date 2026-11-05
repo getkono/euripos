@@ -39,9 +39,22 @@ const SETTINGS: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Internet
 /// default where the user has none (a service account). `Unknown` where
 /// neither can be read.
 pub(super) fn config() -> ProxyConfig {
-    match user() {
+    from_settings(user(), machine)
+}
+
+/// The configuration the user's settings, as read, describe; `machine` is
+/// asked only where the user has none.
+fn from_settings(
+    user: windows::core::Result<User>,
+    machine: impl FnOnce() -> ProxyConfig,
+) -> ProxyConfig {
+    match user {
         Ok(user) => user.config(),
-        Err(error) if error.raw_os_error() == Some(code(ERROR_FILE_NOT_FOUND.0)) => machine(),
+        Err(error)
+            if io::Error::from(error).raw_os_error() == Some(code(ERROR_FILE_NOT_FOUND.0)) =>
+        {
+            machine()
+        }
         Err(_) => ProxyConfig::Unknown,
     }
 }
@@ -67,7 +80,7 @@ impl User {
     }
 }
 
-fn user() -> io::Result<User> {
+fn user() -> windows::core::Result<User> {
     let mut raw = WINHTTP_CURRENT_USER_IE_PROXY_CONFIG::default();
     // SAFETY: `raw` is written by the call; its strings are `WinHTTP`'s, and
     // each is taken (and freed) once below.
@@ -80,7 +93,7 @@ fn user() -> io::Result<User> {
             take(raw.lpszProxyBypass),
         )
     };
-    result.map_err(io::Error::from)?;
+    result?;
     Ok(User {
         auto_detect: raw.fAutoDetect.as_bool(),
         script,
@@ -415,13 +428,14 @@ mod tests {
     use std::time::Duration;
 
     use tokio::sync::Notify;
+    use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, WIN32_ERROR};
     use windows::Win32::System::Registry::{
         HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS, REG_OPTION_VOLATILE, REG_SZ, RegCloseKey,
         RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW,
     };
-    use windows::core::{HSTRING, PCWSTR};
+    use windows::core::{Error, HRESULT, HSTRING, PCWSTR};
 
-    use super::{Auto, Hop, Resolver, User, Watch, config, hops};
+    use super::{Auto, Hop, Resolver, User, Watch, config, from_settings, hops};
     use crate::{NetworkId, ProxyConfig};
 
     #[test]
@@ -440,6 +454,24 @@ mod tests {
         assert_eq!(
             user(false, Some("http://wpad/wpad.dat"), Some("proxy:3128")).config(),
             ProxyConfig::Automatic
+        );
+    }
+
+    // `WinHttpGetIEProxyConfigForCurrentUser` fails with
+    // `ERROR_FILE_NOT_FOUND` where the user has no settings (a service
+    // account); only then is the machine's configuration read.
+    #[test]
+    fn a_user_without_settings_falls_back_to_the_machine() {
+        let error = |code: WIN32_ERROR| -> Result<User, Error> {
+            Err(Error::from_hresult(HRESULT::from_win32(code.0)))
+        };
+        assert_eq!(
+            from_settings(error(ERROR_FILE_NOT_FOUND), || ProxyConfig::Manual),
+            ProxyConfig::Manual
+        );
+        assert_eq!(
+            from_settings(error(ERROR_ACCESS_DENIED), || ProxyConfig::Manual),
+            ProxyConfig::Unknown
         );
     }
 
