@@ -26,7 +26,7 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::Threading::{
     CreateEventW, RegisterWaitForSingleObject, UnregisterWaitEx, WT_EXECUTEDEFAULT,
 };
-use windows::core::{BOOL, HSTRING, PCWSTR, PWSTR, w};
+use windows::core::{BOOL, HRESULT, HSTRING, PCWSTR, PWSTR, w};
 
 use super::{change, check};
 use crate::{NetworkId, ProxyConfig};
@@ -50,11 +50,9 @@ fn from_settings(
 ) -> ProxyConfig {
     match user {
         Ok(user) => user.config(),
-        Err(error)
-            if io::Error::from(error).raw_os_error() == Some(code(ERROR_FILE_NOT_FOUND.0)) =>
-        {
-            machine()
-        }
+        // The binding's error carries the HRESULT the Win32 code maps to,
+        // not the code itself.
+        Err(error) if error.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => machine(),
         Err(_) => ProxyConfig::Unknown,
     }
 }
@@ -133,14 +131,6 @@ unsafe fn take(string: PWSTR) -> Option<String> {
     // error in this binding (it returns null), so its result is ignored.
     let _ = unsafe { GlobalFree(Some(HGLOBAL(string.0.cast()))) };
     text.filter(|text| !text.trim().is_empty())
-}
-
-#[allow(
-    clippy::cast_possible_wrap,
-    reason = "a Win32 error code is the OS error's bit pattern"
-)]
-fn code(error: u32) -> i32 {
-    error as i32
 }
 
 /// A watch on the current user's proxy settings: every change under
