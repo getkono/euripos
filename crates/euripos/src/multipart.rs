@@ -77,7 +77,13 @@ impl Default for Form {
 impl From<Form> for Body {
     fn from(form: Form) -> Self {
         let mut bodies = Vec::with_capacity(form.fields.len() * 2 + 1);
-        for (name, part) in form.fields {
+        for (name, mut part) in form.fields {
+            // A body that names its own media type, as JSON does, keeps it
+            // unless the part sets another.
+            let content_type = part
+                .content_type
+                .take()
+                .or_else(|| part.body.take_content_type());
             let mut head = format!(
                 "--{}\r\nContent-Disposition: form-data; name=\"{}\"",
                 form.boundary,
@@ -87,7 +93,7 @@ impl From<Form> for Body {
                 let _ = write!(head, "; filename=\"{}\"", escape(file_name));
             }
             let mut head = head.into_bytes();
-            if let Some(content_type) = &part.content_type {
+            if let Some(content_type) = &content_type {
                 head.extend_from_slice(b"\r\nContent-Type: ");
                 head.extend_from_slice(content_type.as_bytes());
             }
@@ -134,6 +140,10 @@ impl Part {
     }
 
     /// The part, sent with `Content-Type: value` (RFC 7578 §4.4).
+    ///
+    /// Without it, the part is sent with the media type its body names, as
+    /// [`Body::from_json`] names `application/json`, and otherwise with
+    /// none.
     pub fn content_type(mut self, value: HeaderValue) -> Self {
         self.content_type = Some(value);
         self

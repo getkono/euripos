@@ -88,7 +88,7 @@ File uploads and HTML-style form posts are `multipart/form-data` (RFC 7578): nam
 
 ### Choice
 
-1. `Form::new()`, `Form::text(name, value)`, `Form::part(name, Part)` and `Form::boundary()`; `Part::new(impl Into<Body>)`, `Part::file_name(name)` and `Part::content_type(HeaderValue)`; `impl From<Form> for Body`. The body is the parts in order, each head then its body, sent as one stream whose size is exact when every part's is (so HTTP/1.1 sends `Content-Length`), and the request carries `Content-Type: multipart/form-data; boundary=...` unless it sets its own. The boundary is `euripos-` and 32 hexadecimal digits drawn from the standard library's randomly keyed hasher. `"`, CR and LF in a name or file name are percent-encoded, as HTML's form submission does and RFC 7578 §2 allows; other characters, including non-ASCII ones, are sent as UTF-8.
+1. `Form::new()`, `Form::text(name, value)`, `Form::part(name, Part)` and `Form::boundary()`; `Part::new(impl Into<Body>)`, `Part::file_name(name)` and `Part::content_type(HeaderValue)`; `impl From<Form> for Body`. A part without `content_type` is sent with the media type its body names (`application/json` for `Body::from_json`), and otherwise with none. The body is the parts in order, each head then its body, sent as one stream whose size is exact when every part's is (so HTTP/1.1 sends `Content-Length`), and the request carries `Content-Type: multipart/form-data; boundary=...` unless it sets its own. The boundary is `euripos-` and 32 hexadecimal digits drawn from the standard library's randomly keyed hasher. `"`, CR and LF in a name or file name are percent-encoded, as HTML's form submission does and RFC 7578 §2 allows; other characters, including non-ASCII ones, are sent as UTF-8.
 
 ### Rationale
 
@@ -96,7 +96,7 @@ The encoder is about a hundred lines, so a dependency would cost more API, licen
 
 ### Validated by
 
-`multipart::tests` (exact framing and size, escaping, a fresh valid boundary per form, a streaming part leaving the size unknown); `tests/parity/multipart.rs`: a form with a text field and a file part arrives byte for byte with its media type and boundary.
+`multipart::tests` (exact framing and size, escaping, a fresh valid boundary per form, a streaming part leaving the size unknown, a part taking its body's media type unless it sets one); `tests/parity/multipart.rs`: a form with a text field and a file part arrives byte for byte with its media type and boundary.
 
 ## Redirects
 
