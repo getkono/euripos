@@ -2,7 +2,8 @@
 //! be `Unknown`.
 
 use std::fmt;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{BuildHasher, Hash, RandomState};
+use std::sync::OnceLock;
 
 /// A snapshot of what the platform reports about the network the client is
 /// currently using.
@@ -96,15 +97,18 @@ pub struct NetworkId(u64);
 
 impl NetworkId {
     /// The identity of the network `key` describes. Equal keys give equal
-    /// identities within one build.
+    /// identities within one process.
+    ///
+    /// The hash is keyed once per process, so an identity printed by one
+    /// process cannot be matched against keys hashed in another, and the
+    /// address behind it cannot be recovered by hashing candidates.
     #[allow(
         dead_code,
         reason = "called by the platforms that name networks: Linux, until #11, #12 and #13"
     )]
     pub(crate) fn from_key(key: &impl Hash) -> Self {
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        Self(hasher.finish())
+        static KEYS: OnceLock<RandomState> = OnceLock::new();
+        Self(KEYS.get_or_init(RandomState::new).hash_one(key))
     }
 }
 
@@ -189,6 +193,8 @@ pub enum ProxyConfig {
 
 #[cfg(test)]
 mod tests {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
     use super::{
         Constraint, InterfaceKind, IpAvailability, Metering, NetworkFacts, NetworkId, ProxyConfig,
     };
@@ -215,6 +221,17 @@ mod tests {
             NetworkId::from_key(&(2_u32, "a")),
             NetworkId::from_key(&(3_u32, "a"))
         );
+    }
+
+    // A fixed-key hash would let anyone hash candidate addresses and match
+    // a logged identity; the process-keyed one differs from it (but for a
+    // 2^-64 collision).
+    #[test]
+    fn a_network_id_is_not_the_fixed_key_hash() {
+        let key = (2_u32, "192.0.2.1");
+        let mut fixed = DefaultHasher::new();
+        key.hash(&mut fixed);
+        assert_ne!(NetworkId::from_key(&key).0, fixed.finish());
     }
 
     #[test]

@@ -23,7 +23,7 @@ A connection belongs to the network it was made on (scope, "Why not reqwest": tr
 
 ### Choice
 
-1. `NetworkId` is `Copy + Eq + Hash`, with a `Debug` that prints only the hash. `NetworkFacts::network()` returns `None` where the client cannot name a network: no route to the internet, or a platform with no monitor yet.
+1. `NetworkId` is `Copy + Eq + Hash`, with a `Debug` that prints only the hash. The hash is keyed once per process (a `RandomState` held for the process's life), so equal keys give equal identities within a process and unrelated ones across processes: an identity in a log cannot be matched by hashing candidate interfaces, gateways and addresses, which a fixed-key hash over private address space would allow. `NetworkFacts::network()` returns `None` where the client cannot name a network: no route to the internet, or a platform with no monitor yet.
 
 On Linux the key is, for each IP version the kernel routes to the internet, the outgoing interface index, the gateway and the source address; an IPv6 source counts by its /64 prefix.
 
@@ -35,7 +35,7 @@ The IPv6 source counts by prefix because temporary addresses (RFC 8981) rotate w
 
 ### Validated by
 
-`facts::tests::a_network_id_is_equal_for_equal_keys_and_differs_otherwise`, `a_network_id_debug_names_no_address`; `platform::linux::tests::a_rotated_ipv6_temporary_address_keeps_the_network`, `a_new_ipv4_address_or_gateway_is_a_new_network`.
+`facts::tests::a_network_id_is_equal_for_equal_keys_and_differs_otherwise`, `a_network_id_is_not_the_fixed_key_hash`, `a_network_id_debug_names_no_address`; `platform::linux::tests::a_rotated_ipv6_temporary_address_keeps_the_network`, `a_new_ipv4_address_or_gateway_is_a_new_network`.
 
 ## Network facts
 
