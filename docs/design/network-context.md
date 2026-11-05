@@ -147,7 +147,7 @@ Two request types and four reply fields do not justify `netlink-packet-route`, w
 
 A guess counts as the value it guesses. NetworkManager guesses yes from evidence on the network itself (an Android hotspot's vendor DHCP option, a cellular or Bluetooth device). Treating a likely-metered link as unmetered spends the user's data, while treating a likely-unmetered one as metered only defers background work, so a guess of yes is followed; a guess of no is followed too, because NetworkManager guesses for every connection it has no explicit setting for, and reporting `Unknown` there would leave all of those without an answer. NetworkManager's global `Metered` is that of its primary connection, which on a host it manages carries the default route.
 
-Coverage gaps: the hosted CI runners do not run NetworkManager, so the D-Bus path is covered by its value mapping only, and its behaviour when NetworkManager restarts is not tested; a Wi-Fi or cellular interface is classified from fixtures, not from real hardware.
+Coverage gaps, tracked in #45: the hosted CI runners do not run NetworkManager, so the D-Bus path is covered by its value mapping and by an owner that leaves a name on the session bus, and a real NetworkManager restart is not tested; a Wi-Fi or cellular interface is classified from fixtures, not from real hardware.
 
 ### Validated by
 
