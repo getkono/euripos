@@ -145,13 +145,21 @@ fn classify(cost: u32) -> (Metering, Constraint) {
     (metering, constraint)
 }
 
+/// Whether `error` says this Windows edition registers no Network List
+/// Manager, as on the hosted Windows Server 2025 runner, where the cost is
+/// `Unknown`.
+#[cfg(test)]
+pub(super) fn unregistered(error: &windows::core::Error) -> bool {
+    error.code() == windows::Win32::Foundation::REGDB_E_CLASSNOTREG
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use tokio::sync::Notify;
 
-    use super::{Cost, classify};
+    use super::{Cost, classify, unregistered};
     use crate::{Constraint, Metering};
 
     const UNKNOWN: u32 = 0;
@@ -190,14 +198,21 @@ mod tests {
 
     // The host's own Network List Manager: the cost reads, whatever it is,
     // and the event subscribes. On a thread of its own, which joins the
-    // multithreaded apartment as the monitor's does.
+    // multithreaded apartment as the monitor's does. Windows Server 2025
+    // registers no Network List Manager class; there opening fails with
+    // exactly that error, and nothing else is accepted.
     #[test]
     fn the_host_cost_opens_subscribes_and_reads() {
         let notify = Arc::new(Notify::new());
-        std::thread::spawn(move || {
-            let cost = Cost::open(&notify).unwrap();
-            assert!(cost.events.is_some());
-            cost.cost().unwrap();
+        std::thread::spawn(move || match Cost::open(&notify) {
+            Ok(cost) => {
+                assert!(cost.events.is_some());
+                cost.cost().unwrap();
+            }
+            Err(error) => {
+                assert!(unregistered(&error), "{error}");
+                eprintln!("no Network List Manager on this host: {error}");
+            }
         })
         .join()
         .unwrap();

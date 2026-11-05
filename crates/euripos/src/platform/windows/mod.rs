@@ -253,6 +253,7 @@ mod tests {
 
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
     use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::Notify;
     use tokio_rustls::TlsAcceptor;
     use windows::Win32::NetworkManagement::IpHelper::{
         IF_TYPE_ETHERNET_CSMACD, IF_TYPE_IEEE80211, IF_TYPE_SOFTWARE_LOOPBACK, IF_TYPE_TUNNEL,
@@ -264,12 +265,12 @@ mod tests {
     };
 
     use super::{
-        PROBE_V4, PROBE_V6, Route, best_route, classify, from_sockaddr, key, network_source,
-        to_sockaddr,
+        Cost, PROBE_V4, PROBE_V6, Route, best_route, classify, cost, from_sockaddr, key,
+        network_source, to_sockaddr,
     };
     use crate::monitor::Source;
     use crate::tls::Trust;
-    use crate::{ErrorKind, InterfaceKind, IpAvailability};
+    use crate::{Constraint, ErrorKind, InterfaceKind, IpAvailability, Metering};
 
     const UNSPECIFIED: NDIS_PHYSICAL_MEDIUM = NDIS_PHYSICAL_MEDIUM(0);
 
@@ -367,8 +368,15 @@ mod tests {
                 .unwrap();
             runtime.block_on(async {
                 let mut source = network_source().await.unwrap();
-                assert!(source.cost.is_some());
                 let facts = source.observe();
+                // The cost manager is open, or this edition registers none
+                // and the cost is `Unknown`.
+                if source.cost.is_none() {
+                    let error = Cost::open(&Arc::new(Notify::new())).err().unwrap();
+                    assert!(cost::unregistered(&error), "{error}");
+                    assert_eq!(facts.metering, Metering::Unknown);
+                    assert_eq!(facts.constraint, Constraint::Unknown);
+                }
                 assert_eq!(facts.ipv4, IpAvailability::Available, "{facts:?}");
                 assert!(facts.network.is_some());
                 assert_ne!(facts.interface, InterfaceKind::Unknown);
