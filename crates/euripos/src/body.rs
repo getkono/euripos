@@ -57,37 +57,49 @@ enum Inner {
 struct Decoded {
     body: Body,
     decoder: Decoder,
+    /// Set once the encoded body has ended.
+    ended: bool,
     /// Set once the decoded body has ended or failed.
     done: bool,
 }
 
 impl Decoded {
+    /// The next decoded frame. The encoded body is read only once the
+    /// decoder has handed out everything the bytes it already holds decode
+    /// to, a bounded step per frame, so one small encoded piece that
+    /// expands a thousandfold is never decoded whole in one poll.
     fn poll_frame(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
-        let decode_error = |error| Error::with_source(ErrorKind::Decode, error);
         while !self.done {
-            let decoded = match Pin::new(&mut self.body).poll_frame(cx) {
+            let decoded = if self.ended {
+                self.decoder.finish()
+            } else {
+                self.decoder.next()
+            };
+            match decoded {
+                Ok(Some(data)) => return Poll::Ready(Some(Ok(Frame::data(data)))),
+                Ok(None) if self.ended => {
+                    self.done = true;
+                    break;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.done = true;
+                    return Poll::Ready(Some(Err(Error::with_source(ErrorKind::Decode, error))));
+                }
+            }
+            match Pin::new(&mut self.body).poll_frame(cx) {
                 Poll::Pending => return Poll::Pending,
                 // Trailers carry no encoded bytes.
-                Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
-                    Ok(data) => self.decoder.feed(&data),
-                    Err(_) => continue,
-                },
+                Poll::Ready(Some(Ok(frame))) => {
+                    if let Ok(data) = frame.into_data() {
+                        self.decoder.feed(&data);
+                    }
+                }
                 Poll::Ready(Some(Err(error))) => {
                     self.done = true;
                     return Poll::Ready(Some(Err(error)));
                 }
-                Poll::Ready(None) => {
-                    self.done = true;
-                    self.decoder.finish()
-                }
-            };
-            match decoded {
-                Ok(data) if !data.is_empty() => return Poll::Ready(Some(Ok(Frame::data(data)))),
-                Ok(_) => {}
-                Err(error) => {
-                    self.done = true;
-                    return Poll::Ready(Some(Err(decode_error(error))));
-                }
+                Poll::Ready(None) => self.ended = true,
             }
         }
         Poll::Ready(None)
@@ -251,6 +263,7 @@ impl Body {
         Self::from_inner(Inner::Decoded(Box::new(Decoded {
             body,
             decoder,
+            ended: false,
             done: false,
         })))
     }

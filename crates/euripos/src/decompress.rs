@@ -6,7 +6,7 @@
 
 use std::io;
 
-use bytes::Bytes;
+use bytes::{Buf as _, Bytes, BytesMut};
 use http::{HeaderValue, Method, Response, StatusCode, header};
 
 use crate::Body;
@@ -56,14 +56,32 @@ pub(crate) fn decode(mut response: Response<Body>, method: &Method) -> Response<
     response.map(|body| Body::decoded(body, decoder))
 }
 
-/// A decoder for one content coding, fed the encoded body piece by piece.
-pub(crate) enum Decoder {
+/// The most decoded output one step hands out: 32 KiB, so however far a
+/// few encoded bytes expand, a decoded body holds no more than about this
+/// much output at once. gzip's decoder buffers its output in steps of the
+/// same size.
+#[cfg_attr(
+    not(any(feature = "brotli", feature = "zstd")),
+    expect(dead_code, reason = "only the brotli and zstd decoders use it")
+)]
+const STEP: usize = 32 << 10;
+
+/// A decoder for one content coding, fed the encoded body piece by piece
+/// and drained a bounded step at a time.
+pub(crate) struct Decoder {
+    coding: Coding,
+    /// Encoded bytes received and not yet decoded.
+    pending: BytesMut,
+}
+
+/// The decoding state of one content coding.
+enum Coding {
     /// gzip (RFC 9110 §8.4.1.3, RFC 1952), every member of the stream.
     #[cfg(feature = "gzip")]
     Gzip(Box<flate2::write::MultiGzDecoder<Vec<u8>>>),
     /// Brotli (RFC 7932).
     #[cfg(feature = "brotli")]
-    Brotli(Box<brotli_decompressor::DecompressorWriter<Vec<u8>>>),
+    Brotli(Box<brotli::Brotli>),
     /// Zstandard (RFC 8878 §7.2).
     #[cfg(feature = "zstd")]
     Zstd(Box<zstd::Zstd>),
@@ -76,6 +94,14 @@ pub(crate) enum Decoder {
     None(std::convert::Infallible),
 }
 
+#[cfg_attr(
+    not(any(feature = "brotli", feature = "zstd")),
+    expect(dead_code, reason = "only the brotli and zstd decoders use it")
+)]
+fn invalid(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
 impl Decoder {
     /// The decoder for the content coding named `coding`, if this build has
     /// one.
@@ -83,51 +109,105 @@ impl Decoder {
         let coding = coding.trim();
         #[cfg(feature = "gzip")]
         if coding.eq_ignore_ascii_case("gzip") || coding.eq_ignore_ascii_case("x-gzip") {
-            return Some(Self::Gzip(Box::new(flate2::write::MultiGzDecoder::new(
-                Vec::new(),
+            return Some(Self::new(Coding::Gzip(Box::new(
+                flate2::write::MultiGzDecoder::new(Vec::new()),
             ))));
         }
         #[cfg(feature = "brotli")]
         if coding.eq_ignore_ascii_case("br") {
-            return Some(Self::Brotli(Box::new(
-                brotli_decompressor::DecompressorWriter::new(Vec::new(), 4096),
-            )));
+            return Some(Self::new(Coding::Brotli(Box::default())));
         }
         #[cfg(feature = "zstd")]
         if coding.eq_ignore_ascii_case("zstd") {
-            return Some(Self::Zstd(Box::default()));
+            return Some(Self::new(Coding::Zstd(Box::default())));
         }
         let _ = coding;
         None
     }
 
-    /// Decodes `input`, the next piece of the encoded body, into whatever
-    /// output it completes.
-    pub(crate) fn feed(&mut self, input: &[u8]) -> io::Result<Bytes> {
-        #[cfg(any(feature = "gzip", feature = "brotli"))]
-        use std::io::Write as _;
+    #[cfg_attr(
+        not(any(feature = "gzip", feature = "brotli", feature = "zstd")),
+        expect(dead_code, reason = "a build with no coding makes no decoder")
+    )]
+    fn new(coding: Coding) -> Self {
+        Self {
+            coding,
+            pending: BytesMut::new(),
+        }
+    }
+
+    /// Takes `input`, the next piece of the encoded body. Call
+    /// [`next`](Self::next) until it returns `None` before feeding more, so
+    /// the encoded bytes held stay those of one unfinished unit of the
+    /// coding.
+    pub(crate) fn feed(&mut self, input: &[u8]) {
+        self.pending.extend_from_slice(input);
+    }
+
+    /// The next step of output, at most about [`STEP`] bytes, from the
+    /// input fed so far, or `None` once that input is used up.
+    pub(crate) fn next(&mut self) -> io::Result<Option<Bytes>> {
+        loop {
+            let (used, output) = self.coding.step(&self.pending)?;
+            self.pending.advance(used);
+            if !output.is_empty() {
+                return Ok(Some(output));
+            }
+            if used == 0 {
+                return Ok(None);
+            }
+        }
+    }
+
+    /// Once the encoded body has ended: the next step of the output left,
+    /// `None` once it is all handed out, or an error when the body ended
+    /// before its coding's end.
+    pub(crate) fn finish(&mut self) -> io::Result<Option<Bytes>> {
+        if let Some(output) = self.next()? {
+            return Ok(Some(output));
+        }
+        if !self.pending.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the encoded body ended inside its coding",
+            ));
+        }
+        let output = self.coding.finish()?;
+        Ok((!output.is_empty()).then_some(output))
+    }
+}
+
+impl Coding {
+    /// Decodes from the start of `input` until a step of output is ready
+    /// or `input` is used up, and returns how much of `input` it used and
+    /// the output. No output and nothing used means it needs more input.
+    fn step(&mut self, input: &[u8]) -> io::Result<(usize, Bytes)> {
         let _ = input;
         match self {
             #[cfg(feature = "gzip")]
             Self::Gzip(decoder) => {
-                decoder.write_all(input)?;
-                Ok(std::mem::take(decoder.get_mut()).into())
+                use std::io::Write as _;
+                if input.is_empty() {
+                    return Ok((0, Bytes::new()));
+                }
+                // One `write` decodes into the decoder's own 32 KiB buffer
+                // and moves what it held before into the `Vec`, so each
+                // step's output is bounded by that buffer.
+                let used = decoder.write(input)?;
+                Ok((used, std::mem::take(decoder.get_mut()).into()))
             }
             #[cfg(feature = "brotli")]
-            Self::Brotli(decoder) => {
-                decoder.write_all(input)?;
-                Ok(std::mem::take(decoder.get_mut()).into())
-            }
+            Self::Brotli(decoder) => decoder.step(input),
             #[cfg(feature = "zstd")]
-            Self::Zstd(decoder) => decoder.feed(input).map(Bytes::from),
+            Self::Zstd(decoder) => decoder.step(input),
             #[cfg(not(any(feature = "gzip", feature = "brotli", feature = "zstd")))]
             Self::None(never) => match *never {},
         }
     }
 
-    /// The output left once the encoded body has ended, or an error when it
-    /// ended before its coding's end.
-    pub(crate) fn finish(&mut self) -> io::Result<Bytes> {
+    /// The output left once all input has been decoded, or an error when
+    /// the coding has not reached its end.
+    fn finish(&mut self) -> io::Result<Bytes> {
         match self {
             #[cfg(feature = "gzip")]
             Self::Gzip(decoder) => {
@@ -135,14 +215,85 @@ impl Decoder {
                 Ok(std::mem::take(decoder.get_mut()).into())
             }
             #[cfg(feature = "brotli")]
-            Self::Brotli(decoder) => {
-                decoder.close()?;
-                Ok(std::mem::take(decoder.get_mut()).into())
-            }
+            Self::Brotli(decoder) => decoder.finish().map(|()| Bytes::new()),
             #[cfg(feature = "zstd")]
-            Self::Zstd(decoder) => decoder.finish().map(Bytes::from),
+            Self::Zstd(decoder) => decoder.finish().map(|()| Bytes::new()),
             #[cfg(not(any(feature = "gzip", feature = "brotli", feature = "zstd")))]
             Self::None(never) => match *never {},
+        }
+    }
+}
+
+/// A Brotli decoder that writes at most [`STEP`] bytes of output a step.
+#[cfg(feature = "brotli")]
+mod brotli {
+    use std::io;
+
+    use brotli_decompressor::{BrotliDecompressStream, BrotliResult, BrotliState, StandardAlloc};
+    use bytes::Bytes;
+
+    use super::{STEP, invalid};
+
+    pub(crate) struct Brotli {
+        state: BrotliState<StandardAlloc, StandardAlloc, StandardAlloc>,
+        total_out: usize,
+        /// Set once the stream has reached its end.
+        ended: bool,
+    }
+
+    impl Default for Brotli {
+        fn default() -> Self {
+            Self {
+                state: BrotliState::new(
+                    StandardAlloc::default(),
+                    StandardAlloc::default(),
+                    StandardAlloc::default(),
+                ),
+                total_out: 0,
+                ended: false,
+            }
+        }
+    }
+
+    impl Brotli {
+        pub(crate) fn step(&mut self, input: &[u8]) -> io::Result<(usize, Bytes)> {
+            if self.ended {
+                return if input.is_empty() {
+                    Ok((0, Bytes::new()))
+                } else {
+                    Err(invalid("data after the end of the brotli stream"))
+                };
+            }
+            let mut output = vec![0; STEP];
+            let (mut available_in, mut used) = (input.len(), 0);
+            let (mut available_out, mut written) = (output.len(), 0);
+            match BrotliDecompressStream(
+                &mut available_in,
+                &mut used,
+                input,
+                &mut available_out,
+                &mut written,
+                &mut output,
+                &mut self.total_out,
+                &mut self.state,
+            ) {
+                BrotliResult::ResultFailure => return Err(invalid("a corrupt brotli stream")),
+                BrotliResult::ResultSuccess => self.ended = true,
+                BrotliResult::NeedsMoreInput | BrotliResult::NeedsMoreOutput => {}
+            }
+            output.truncate(written);
+            Ok((used, output.into()))
+        }
+
+        pub(crate) fn finish(&self) -> io::Result<()> {
+            if self.ended {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "the brotli stream ended early",
+                ))
+            }
         }
     }
 }
@@ -151,11 +302,16 @@ impl Decoder {
 ///
 /// `ruzstd` decodes whole blocks from a reader, so the frame and block
 /// headers are read here to hand it only complete blocks (RFC 8878 §3.1.1).
+/// One block decodes to at most 128 KiB, which is handed out a [`STEP`] at
+/// a time before the next block is decoded.
 #[cfg(feature = "zstd")]
 mod zstd {
-    use std::io;
+    use std::io::{self, Read as _};
 
+    use bytes::Bytes;
     use ruzstd::decoding::{BlockDecodingStrategy, FrameDecoder};
+
+    use super::{STEP, invalid};
 
     /// The largest window a `zstd` content coding may use (RFC 9659 §3).
     const MAX_WINDOW: u64 = 8 << 20;
@@ -165,10 +321,16 @@ mod zstd {
 
     pub(crate) struct Zstd {
         decoder: FrameDecoder,
-        /// Received bytes not yet decoded.
-        input: Vec<u8>,
-        /// Inside a frame: whether its blocks end with a checksum.
-        frame: Option<bool>,
+        /// Inside a frame: what is known of it.
+        frame: Option<Frame>,
+    }
+
+    #[derive(Clone, Copy)]
+    struct Frame {
+        /// Whether its blocks end with a checksum.
+        checksum: bool,
+        /// Whether its last block has been decoded.
+        ended: bool,
     }
 
     impl Default for Zstd {
@@ -177,32 +339,49 @@ mod zstd {
             decoder.set_max_window_size(MAX_WINDOW);
             Self {
                 decoder,
-                input: Vec::new(),
                 frame: None,
             }
         }
     }
 
-    fn invalid(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
-        io::Error::new(io::ErrorKind::InvalidData, error)
-    }
-
     impl Zstd {
-        pub(crate) fn feed(&mut self, input: &[u8]) -> io::Result<Vec<u8>> {
-            self.input.extend_from_slice(input);
-            let mut output = Vec::new();
+        pub(crate) fn step(&mut self, input: &[u8]) -> io::Result<(usize, Bytes)> {
+            let mut used = 0;
             loop {
-                let Some(checksum) = self.frame else {
-                    if !self.start_frame()? {
-                        return Ok(output);
+                // Output already decoded goes out first, a step at a time.
+                let ready = self.decoder.can_collect();
+                if ready > 0 {
+                    let mut output = vec![0; ready.min(STEP)];
+                    let read = self.decoder.read(&mut output)?;
+                    output.truncate(read);
+                    return Ok((used, output.into()));
+                }
+                let rest = &input[used..];
+                let Some(frame) = self.frame else {
+                    let header = self.start_frame(rest)?;
+                    if header == 0 {
+                        return Ok((used, Bytes::new()));
                     }
+                    used += header;
                     continue;
                 };
+                if frame.ended {
+                    // The checksum covers the output, so it is checked once
+                    // all of it has been read out.
+                    if frame.checksum
+                        && self.decoder.get_checksum_from_data()
+                            != self.decoder.get_calculated_checksum()
+                    {
+                        return Err(invalid("a zstd frame failed its checksum"));
+                    }
+                    self.frame = None;
+                    continue;
+                }
                 // A block is a three-byte header, then its content: the
                 // block's size for a raw or compressed block, one byte for
                 // an RLE block (§3.1.1.2).
-                let Some(header) = self.input.get(..3) else {
-                    return Ok(output);
+                let Some(header) = rest.get(..3) else {
+                    return Ok((used, Bytes::new()));
                 };
                 let header = u32::from_le_bytes([header[0], header[1], header[2], 0]);
                 let last = header & 1 == 1;
@@ -212,55 +391,43 @@ mod zstd {
                     1 => 1,
                     _ => return Err(invalid("a reserved zstd block type")),
                 };
-                let whole = 3 + content + if last && checksum { 4 } else { 0 };
-                if self.input.len() < whole {
-                    return Ok(output);
-                }
-                let mut block = &self.input[..whole];
+                let whole = 3 + content + if last && frame.checksum { 4 } else { 0 };
+                let Some(mut block) = rest.get(..whole) else {
+                    return Ok((used, Bytes::new()));
+                };
                 self.decoder
                     .decode_blocks(&mut block, BlockDecodingStrategy::UptoBlocks(1))
                     .map_err(invalid)?;
-                self.input.drain(..whole);
-                if let Some(decoded) = self.decoder.collect() {
-                    output.extend_from_slice(&decoded);
-                }
-                if last {
-                    if checksum
-                        && self.decoder.get_checksum_from_data()
-                            != self.decoder.get_calculated_checksum()
-                    {
-                        return Err(invalid("a zstd frame failed its checksum"));
-                    }
-                    self.frame = None;
-                }
+                used += whole;
+                self.frame = Some(Frame {
+                    ended: last,
+                    ..frame
+                });
             }
         }
 
         /// Starts the next frame, or skips a skippable one, once its header
-        /// has arrived; `false` while it has not.
-        fn start_frame(&mut self) -> io::Result<bool> {
-            let Some(magic) = self.input.get(..4) else {
-                return Ok(false);
+        /// is at the start of `input`, and returns how many bytes it used:
+        /// none while the header has not all arrived.
+        fn start_frame(&mut self, input: &[u8]) -> io::Result<usize> {
+            let Some(magic) = input.get(..4) else {
+                return Ok(0);
             };
             let magic = u32::from_le_bytes([magic[0], magic[1], magic[2], magic[3]]);
             if magic & 0xFFFF_FFF0 == 0x184D_2A50 {
                 // A skippable frame (§3.1.2): its size, then that many bytes.
-                let Some(size) = self.input.get(4..8) else {
-                    return Ok(false);
+                let Some(size) = input.get(4..8) else {
+                    return Ok(0);
                 };
                 let whole = 8 + u32::from_le_bytes([size[0], size[1], size[2], size[3]]) as usize;
-                if self.input.len() < whole {
-                    return Ok(false);
-                }
-                self.input.drain(..whole);
-                return Ok(true);
+                return Ok(if input.len() < whole { 0 } else { whole });
             }
             if magic != MAGIC {
                 return Err(invalid("not a zstd frame"));
             }
             // §3.1.1.1: the descriptor sets which optional fields follow.
-            let Some(&descriptor) = self.input.get(4) else {
-                return Ok(false);
+            let Some(&descriptor) = input.get(4) else {
+                return Ok(0);
             };
             let single_segment = descriptor & 0x20 != 0;
             let window = usize::from(!single_segment);
@@ -272,24 +439,25 @@ mod zstd {
                 _ => 8,
             };
             let header = 5 + window + dictionary + content_size;
-            if self.input.len() < header {
-                return Ok(false);
-            }
-            let mut source = &self.input[..header];
+            let Some(mut source) = input.get(..header) else {
+                return Ok(0);
+            };
             self.decoder.reset(&mut source).map_err(invalid)?;
-            self.input.drain(..header);
-            self.frame = Some(descriptor & 0x04 != 0);
-            Ok(true)
+            self.frame = Some(Frame {
+                checksum: descriptor & 0x04 != 0,
+                ended: false,
+            });
+            Ok(header)
         }
 
-        pub(crate) fn finish(&mut self) -> io::Result<Vec<u8>> {
-            if self.frame.is_some() || !self.input.is_empty() {
+        pub(crate) fn finish(&self) -> io::Result<()> {
+            if self.frame.is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "the zstd stream ended inside a frame",
                 ));
             }
-            Ok(Vec::new())
+            Ok(())
         }
     }
 }
@@ -350,9 +518,14 @@ mod tests {
         let mut decoder = Decoder::for_coding(coding).expect("a decoder in this build");
         let mut out = Vec::new();
         for piece in encoded.chunks(step) {
-            out.extend_from_slice(&decoder.feed(piece)?);
+            decoder.feed(piece);
+            while let Some(output) = decoder.next()? {
+                out.extend_from_slice(&output);
+            }
         }
-        out.extend_from_slice(&decoder.finish()?);
+        while let Some(output) = decoder.finish()? {
+            out.extend_from_slice(&output);
+        }
         Ok(out)
     }
 
