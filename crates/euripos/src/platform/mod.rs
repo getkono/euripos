@@ -13,13 +13,36 @@ mod linux;
 mod windows;
 
 #[cfg(target_os = "android")]
-pub(crate) use android::{bind_to_network, network_source, platform_verifier};
+pub(crate) use android::{bind_to_network, network_source, platform_verifier, query_https};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-pub(crate) use apple::{Stream, connect, network_source};
+pub(crate) use apple::{Stream, connect, network_source, query_https};
 #[cfg(target_os = "linux")]
-pub(crate) use linux::network_source;
+pub(crate) use linux::{network_source, query_https};
 #[cfg(target_os = "windows")]
 pub(crate) use windows::network_source;
+
+/// Query `name`'s HTTPS records through the platform's resolver
+/// ([`crate::dns`]) on `network`, where the platform can put a query to a
+/// given network, and on the network it is on otherwise. Where the platform
+/// has no way to query them, there is no answer, and the origin's records are
+/// `Unknown`.
+// TODO(#57): `DnsQueryEx` on Windows (docs/adr/0002-windows-dns.md).
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios"
+)))]
+#[allow(
+    clippy::unused_async,
+    reason = "the signature is every platform's; the others query asynchronously"
+)]
+pub(crate) async fn query_https(
+    _network: Option<crate::NetworkId>,
+    _name: &str,
+) -> Option<crate::dns::Answer> {
+    None
+}
 
 /// Whether this platform reports the network it is on through
 /// [`network_source`].

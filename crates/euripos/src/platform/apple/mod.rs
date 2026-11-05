@@ -1,10 +1,12 @@
 //! macOS and iOS: connections through Network.framework's `nw_connection`,
-//! and the network from its path monitor.
+//! the network from its path monitor, and HTTPS records through dnssd.
 //!
-//! See docs/adr/0003-apple-network-framework.md and
-//! docs/design/network-context.md, "Apple monitor".
+//! See docs/adr/0003-apple-network-framework.md,
+//! docs/design/network-context.md, "Apple monitor", and
+//! docs/design/https-svcb.md.
 
 mod connection;
+mod dnssd;
 mod ffi;
 mod path;
 
@@ -12,6 +14,7 @@ use std::io;
 use std::sync::OnceLock;
 
 pub(crate) use connection::{Stream, connect};
+pub(crate) use dnssd::query_https;
 pub(crate) use path::network_source;
 
 /// An owned reference to a Network.framework object, released on drop.

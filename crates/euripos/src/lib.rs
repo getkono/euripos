@@ -43,6 +43,7 @@ mod body;
 mod client;
 mod cookies;
 mod decompress;
+mod dns;
 mod error;
 mod facts;
 mod json;
