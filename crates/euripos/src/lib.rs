@@ -4,8 +4,14 @@
 //! The crate is pre-release. [`Client`] is the plain baseline every later
 //! optimization is measured against: HTTP/1.1 and HTTP/2 on hyper, TLS on
 //! rustls with the platform verifier, and four finite timeouts, with no
-//! adaptive behaviour. Requests and responses are the [`http`] crate's types,
-//! re-exported so the versions always match:
+//! adaptive behaviour. On top of it sit the features an application expects
+//! of a reqwest-level client, none of them adaptive: redirects
+//! ([`ClientBuilder::max_redirects`]), a cookie store
+//! ([`ClientBuilder::cookie_store`]), streaming bodies ([`Body::wrap`],
+//! [`Body::chunk`]), JSON ([`Body::from_json`], [`Body::json`]),
+//! `multipart/form-data` ([`Form`]), and response decompression behind the
+//! `gzip`, `brotli` and `zstd` features. Requests and responses are the
+//! [`http`] crate's types, re-exported so the versions always match:
 //!
 //! ```no_run
 //! use std::time::Duration;
@@ -35,12 +41,17 @@
 
 mod body;
 mod client;
+mod cookies;
+mod decompress;
 mod error;
 mod facts;
+mod json;
 mod marker;
 mod monitor;
+mod multipart;
 mod platform;
 mod pool;
+mod redirect;
 mod timeout;
 mod tls;
 
@@ -50,6 +61,7 @@ pub use error::{Error, ErrorKind, TimeoutKind};
 pub use facts::{
     Constraint, InterfaceKind, IpAvailability, Metering, NetworkFacts, NetworkId, ProxyConfig,
 };
+pub use multipart::{Form, Part};
 
 /// The [`http`](https://docs.rs/http/1) crate, whose `Request` and `Response`
 /// this client sends and returns.

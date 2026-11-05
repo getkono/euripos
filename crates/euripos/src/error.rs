@@ -75,6 +75,18 @@ pub enum ErrorKind {
     NetworkChanged,
     /// The request was cancelled before it completed.
     Cancelled,
+    /// The request body could not be produced: the source a
+    /// [`Body::wrap`](crate::Body::wrap) body streams from failed, or a
+    /// value could not be serialized into one.
+    Body,
+    /// The response body could not be decoded into what the caller asked
+    /// for: it was not UTF-8 text or the expected JSON, or its content
+    /// coding was corrupt.
+    Decode,
+    /// The server redirected the request more times than the client
+    /// follows, set by
+    /// [`ClientBuilder::max_redirects`](crate::ClientBuilder::max_redirects).
+    Redirect,
 }
 
 impl fmt::Display for ErrorKind {
@@ -86,6 +98,9 @@ impl fmt::Display for ErrorKind {
             Self::Protocol => f.write_str("protocol error"),
             Self::NetworkChanged => f.write_str("network changed during the request"),
             Self::Cancelled => f.write_str("request cancelled"),
+            Self::Body => f.write_str("request body failed"),
+            Self::Decode => f.write_str("response body could not be decoded"),
+            Self::Redirect => f.write_str("too many redirects"),
         }
     }
 }
@@ -131,6 +146,18 @@ mod tests {
         let error = Error::new(ErrorKind::Timeout(TimeoutKind::ReadStall));
         assert_eq!(error.to_string(), "read timed out");
         assert_eq!(error.kind(), ErrorKind::Timeout(TimeoutKind::ReadStall));
+    }
+
+    #[test]
+    fn body_kinds_say_which_side_failed() {
+        assert_eq!(
+            Error::new(ErrorKind::Body).to_string(),
+            "request body failed"
+        );
+        assert_eq!(
+            Error::new(ErrorKind::Decode).to_string(),
+            "response body could not be decoded"
+        );
     }
 
     #[test]

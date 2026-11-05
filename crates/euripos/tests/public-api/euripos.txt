@@ -24,10 +24,13 @@ impl core::marker::UnsafeUnpin for euripos::Constraint
 impl core::panic::unwind_safe::RefUnwindSafe for euripos::Constraint
 impl core::panic::unwind_safe::UnwindSafe for euripos::Constraint
 #[non_exhaustive] pub enum euripos::ErrorKind
+pub euripos::ErrorKind::Body
 pub euripos::ErrorKind::Cancelled
 pub euripos::ErrorKind::Connect
+pub euripos::ErrorKind::Decode
 pub euripos::ErrorKind::NetworkChanged
 pub euripos::ErrorKind::Protocol
+pub euripos::ErrorKind::Redirect
 pub euripos::ErrorKind::Timeout(euripos::TimeoutKind)
 pub euripos::ErrorKind::Tls
 impl core::clone::Clone for euripos::ErrorKind
@@ -169,7 +172,14 @@ impl core::panic::unwind_safe::RefUnwindSafe for euripos::TimeoutKind
 impl core::panic::unwind_safe::UnwindSafe for euripos::TimeoutKind
 pub struct euripos::Body
 impl euripos::Body
+pub async fn euripos::Body::bytes(self) -> core::result::Result<bytes::bytes::Bytes, euripos::Error>
+pub async fn euripos::Body::chunk(&mut self) -> core::result::Result<core::option::Option<bytes::bytes::Bytes>, euripos::Error>
 pub fn euripos::Body::empty() -> Self
+pub async fn euripos::Body::text(self) -> core::result::Result<alloc::string::String, euripos::Error>
+pub fn euripos::Body::wrap<B>(B) -> Self where B: http_body::Body<Data = bytes::bytes::Bytes> + core::marker::Send + core::marker::Sync + 'static, <B as http_body::Body>::Error: core::convert::Into<alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+impl euripos::Body
+pub fn euripos::Body::from_json<T: serde_core::ser::Serialize + ?core::marker::Sized>(&T) -> core::result::Result<Self, euripos::Error>
+pub async fn euripos::Body::json<T: serde_core::de::DeserializeOwned>(self) -> core::result::Result<T, euripos::Error>
 impl core::convert::From<&'static [u8]> for euripos::Body
 pub fn euripos::Body::from(&'static [u8]) -> Self
 impl core::convert::From<&'static str> for euripos::Body
@@ -182,6 +192,8 @@ impl core::convert::From<alloc::vec::Vec<u8>> for euripos::Body
 pub fn euripos::Body::from(alloc::vec::Vec<u8>) -> Self
 impl core::convert::From<bytes::bytes::Bytes> for euripos::Body
 pub fn euripos::Body::from(bytes::bytes::Bytes) -> Self
+impl core::convert::From<euripos::Form> for euripos::Body
+pub fn euripos::Body::from(euripos::Form) -> Self
 impl core::default::Default for euripos::Body
 pub fn euripos::Body::default() -> Self
 impl core::fmt::Debug for euripos::Body
@@ -222,6 +234,8 @@ pub struct euripos::ClientBuilder
 impl euripos::ClientBuilder
 pub fn euripos::ClientBuilder::build(self) -> euripos::Client
 pub fn euripos::ClientBuilder::connect_timeout(self, core::time::Duration) -> Self
+pub fn euripos::ClientBuilder::cookie_store(self, bool) -> Self
+pub fn euripos::ClientBuilder::max_redirects(self, u32) -> Self
 pub fn euripos::ClientBuilder::new() -> Self
 pub fn euripos::ClientBuilder::read_stall_timeout(self, core::time::Duration) -> Self
 pub fn euripos::ClientBuilder::tls_timeout(self, core::time::Duration) -> Self
@@ -253,6 +267,25 @@ impl core::marker::Unpin for euripos::Error
 impl core::marker::UnsafeUnpin for euripos::Error
 impl !core::panic::unwind_safe::RefUnwindSafe for euripos::Error
 impl !core::panic::unwind_safe::UnwindSafe for euripos::Error
+pub struct euripos::Form
+impl euripos::Form
+pub fn euripos::Form::boundary(&self) -> &str
+pub fn euripos::Form::new() -> Self
+pub fn euripos::Form::part(self, impl core::convert::Into<alloc::string::String>, euripos::Part) -> Self
+pub fn euripos::Form::text(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+impl core::convert::From<euripos::Form> for euripos::Body
+pub fn euripos::Body::from(euripos::Form) -> Self
+impl core::default::Default for euripos::Form
+pub fn euripos::Form::default() -> Self
+impl core::fmt::Debug for euripos::Form
+pub fn euripos::Form::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for euripos::Form
+impl core::marker::Send for euripos::Form
+impl core::marker::Sync for euripos::Form
+impl core::marker::Unpin for euripos::Form
+impl core::marker::UnsafeUnpin for euripos::Form
+impl !core::panic::unwind_safe::RefUnwindSafe for euripos::Form
+impl !core::panic::unwind_safe::UnwindSafe for euripos::Form
 pub struct euripos::NetworkFacts
 impl euripos::NetworkFacts
 pub fn euripos::NetworkFacts::constraint(&self) -> euripos::Constraint
@@ -298,3 +331,17 @@ impl core::marker::Unpin for euripos::NetworkId
 impl core::marker::UnsafeUnpin for euripos::NetworkId
 impl core::panic::unwind_safe::RefUnwindSafe for euripos::NetworkId
 impl core::panic::unwind_safe::UnwindSafe for euripos::NetworkId
+pub struct euripos::Part
+impl euripos::Part
+pub fn euripos::Part::content_type(self, http::header::value::HeaderValue) -> Self
+pub fn euripos::Part::file_name(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn euripos::Part::new(impl core::convert::Into<euripos::Body>) -> Self
+impl core::fmt::Debug for euripos::Part
+pub fn euripos::Part::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl !core::marker::Freeze for euripos::Part
+impl core::marker::Send for euripos::Part
+impl core::marker::Sync for euripos::Part
+impl core::marker::Unpin for euripos::Part
+impl core::marker::UnsafeUnpin for euripos::Part
+impl !core::panic::unwind_safe::RefUnwindSafe for euripos::Part
+impl !core::panic::unwind_safe::UnwindSafe for euripos::Part

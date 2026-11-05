@@ -5,23 +5,29 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use http::{Request, Response};
+use http::{Request, Response, header};
 
+use crate::cookies::Jar;
+use crate::decompress;
 use crate::marker::NotUnwindSafe;
 use crate::monitor::NetworkMonitor;
 use crate::pool::{Dst, Pool};
+use crate::redirect;
 use crate::timeout::{Timeouts, deadline, until};
 use crate::tls::Trust;
-use crate::{Body, Error, NetworkFacts, TimeoutKind};
+use crate::{Body, Error, ErrorKind, NetworkFacts, TimeoutKind};
 
 /// An HTTP client.
 ///
 /// Build one with [`Client::new`] for the defaults or [`Client::builder`] to
-/// change a timeout. A `Client` is cheap to clone and is meant to be shared:
+/// change a setting. A `Client` is cheap to clone and is meant to be shared:
 /// clones use the same connections.
 #[derive(Clone)]
 pub struct Client {
     timeouts: Timeouts,
+    max_redirects: u32,
+    /// The cookie store, when the client keeps one.
+    cookies: Option<Arc<Jar>>,
     pool: Arc<Pool>,
     _unwind: NotUnwindSafe,
 }
@@ -30,6 +36,8 @@ impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Client")
             .field("timeouts", &self.timeouts)
+            .field("max_redirects", &self.max_redirects)
+            .field("cookie_store", &self.cookies.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -50,15 +58,25 @@ impl Client {
     ///
     /// The request URI is absolute, `http` or `https`. An `https` request
     /// negotiates HTTP/2 or HTTP/1.1 by ALPN; an `http` request uses
-    /// HTTP/1.1. The response body streams as it is read, under the same
-    /// total and read-stall timeouts. The returned future owns everything it
-    /// needs, so it can be spawned.
+    /// HTTP/1.1. A body that knows its media type, such as
+    /// [`Body::from_json`], sets `Content-Type` unless the request already
+    /// has one. Redirects are followed as
+    /// [`ClientBuilder::max_redirects`] describes, and the response is the
+    /// last one in the chain. With the `gzip`, `brotli` or `zstd` feature
+    /// on, a request without `Accept-Encoding` or `Range` asks for those
+    /// codings, and a response in one of them is decoded as it is read, its
+    /// `Content-Encoding` and `Content-Length` removed; a request that sets
+    /// `Accept-Encoding` gets the response as sent. The response body
+    /// streams as it is read, under
+    /// the same total and read-stall timeouts. The returned future owns
+    /// everything it needs, so it can be spawned.
     ///
     /// # Errors
     ///
     /// Resolves to an [`Error`] whose [`kind`](Error::kind) says whether the
-    /// connection, the TLS handshake, a timeout, the protocol or a network
-    /// change failed the request, or that it was cancelled. A URI with no
+    /// connection, the TLS handshake, a timeout, the protocol, a network
+    /// change, the request body or too many redirects failed the request, or
+    /// that it was cancelled. A URI with no
     /// `http` or `https` origin fails as [`ErrorKind::Connect`](crate::ErrorKind::Connect).
     ///
     /// # Panics
@@ -71,16 +89,109 @@ impl Client {
     where
         B: Into<Body>,
     {
-        let request = request.map(Into::into);
-        let client = self.clone();
-        async move {
-            let total = deadline(client.timeouts.total);
-            let dst = Dst::from_uri(request.uri())?;
-            let (response, lease) =
-                until(total, TimeoutKind::Total, client.pool.send(dst, request)).await?;
-            let read_stall = client.timeouts.read_stall;
-            Ok(response.map(|incoming| Body::streaming(incoming, lease, read_stall, total)))
+        let mut request = request.map(Into::into);
+        if let Some(content_type) = request.body_mut().take_content_type()
+            && !request.headers().contains_key(header::CONTENT_TYPE)
+        {
+            request
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, content_type);
         }
+        self.clone().execute(request)
+    }
+
+    /// Sends `request`, following redirects, under one total timeout.
+    async fn execute(self, request: Request<Body>) -> Result<Response<Body>, Error> {
+        let total = deadline(self.timeouts.total);
+        let read_stall = self.timeouts.read_stall;
+        let (parts, mut body) = request.into_parts();
+        let http::request::Parts {
+            mut method,
+            mut uri,
+            version,
+            mut headers,
+            extensions,
+            ..
+        } = parts;
+        let mut extensions = Some(extensions);
+        // The client asks for the codings it decodes, unless the caller
+        // chose its own or asks for a range, whose bytes are of the
+        // encoded body (RFC 9110 §14.1.1).
+        let accept_encoding = if headers.contains_key(header::ACCEPT_ENCODING)
+            || headers.contains_key(header::RANGE)
+        {
+            None
+        } else {
+            decompress::accept_encoding()
+        };
+        let mut redirects = 0;
+        let response = loop {
+            // A body is copied only while a redirect could need it again.
+            let replay = if self.max_redirects > redirects {
+                body.try_clone()
+            } else {
+                None
+            };
+            let mut request = Request::new(body);
+            *request.method_mut() = method.clone();
+            *request.uri_mut() = uri.clone();
+            *request.version_mut() = version;
+            *request.headers_mut() = headers.clone();
+            if let Some(extensions) = extensions.take() {
+                *request.extensions_mut() = extensions;
+            }
+            if let Some(jar) = &self.cookies
+                && !headers.contains_key(header::COOKIE)
+                && let Some(cookie) = jar.header(&uri)
+            {
+                request.headers_mut().insert(header::COOKIE, cookie);
+            }
+            if let Some(accept_encoding) = &accept_encoding {
+                request
+                    .headers_mut()
+                    .insert(header::ACCEPT_ENCODING, accept_encoding.clone());
+            }
+            let dst = Dst::from_uri(&uri)?;
+            let (response, lease) =
+                until(total, TimeoutKind::Total, self.pool.send(dst, request)).await?;
+            if let Some(jar) = &self.cookies {
+                jar.store(&uri, response.headers().get_all(header::SET_COOKIE));
+            }
+            let response =
+                response.map(|incoming| Body::streaming(incoming, lease, read_stall, total));
+            if self.max_redirects == 0 {
+                break response;
+            }
+            let Some(next) = redirect::follow(
+                response.status(),
+                response.headers().get(header::LOCATION),
+                &method,
+                &uri,
+            ) else {
+                break response;
+            };
+            if redirects == self.max_redirects {
+                return Err(Error::new(ErrorKind::Redirect));
+            }
+            body = if next.keep_body {
+                // A body that cannot be sent again ends the chain here.
+                let Some(replay) = replay else {
+                    break response;
+                };
+                replay
+            } else {
+                Body::empty()
+            };
+            redirects += 1;
+            redirect::strip(&mut headers, &uri, &next.uri, next.keep_body);
+            method = next.method;
+            uri = next.uri;
+        };
+        Ok(if accept_encoding.is_some() {
+            decompress::decode(response, &method)
+        } else {
+            response
+        })
     }
 
     /// What the platform reports about the network the client is using now.
@@ -102,22 +213,59 @@ impl Default for Client {
 
 /// Builds a [`Client`].
 ///
-/// The only settings are the four timeouts. Each is finite: a timeout can be
-/// changed but not turned off. The defaults are 10 seconds to connect,
-/// 10 seconds for the TLS handshake, 30 seconds for the whole request and
-/// 30 seconds for a read that receives nothing.
+/// The settings are the four timeouts, how many redirects to follow, and
+/// whether to keep cookies. Each timeout is finite: it can be changed but
+/// not turned off. The defaults are 10 seconds to connect, 10 seconds for
+/// the TLS handshake, 30 seconds for the whole request, 30 seconds for a
+/// read that receives nothing, 10 redirects, and no cookie store.
 #[derive(Debug)]
 #[must_use]
 pub struct ClientBuilder {
     timeouts: Timeouts,
+    max_redirects: u32,
+    cookie_store: bool,
 }
 
 impl ClientBuilder {
-    /// A builder that starts from the default timeouts.
+    /// A builder that starts from the default settings.
     pub fn new() -> Self {
         Self {
             timeouts: Timeouts::default(),
+            max_redirects: redirect::DEFAULT_MAX_REDIRECTS,
+            cookie_store: false,
         }
+    }
+
+    /// Whether the client keeps the cookies servers set and sends them
+    /// back (RFC 6265). Defaults to `false`: no cookie is stored or sent
+    /// unless the request sets `Cookie` itself.
+    ///
+    /// The store lives as long as the client and its clones, which share
+    /// it, and is held in memory only. A request that sets its own `Cookie`
+    /// header is sent with that header alone. Domains are checked as
+    /// RFC 6265 §5.3 describes, but without the public suffix list: a
+    /// cookie for a single-label domain such as `com` is refused, while one
+    /// for a multi-label public suffix such as `co.uk` is not.
+    pub fn cookie_store(mut self, enabled: bool) -> Self {
+        self.cookie_store = enabled;
+        self
+    }
+
+    /// How many redirects a request follows before it fails as
+    /// [`ErrorKind::Redirect`](crate::ErrorKind::Redirect). Defaults to 10;
+    /// `0` follows none, and returns each redirect response as it is.
+    ///
+    /// A `301`, `302`, `303`, `307` or `308` response with an `http` or
+    /// `https` `Location` is followed (RFC 9110 §15.4). `303`, and `301` or
+    /// `302` to a `POST`, are followed with a `GET` and no body; the others
+    /// resend the request as it was, unless its body streams and cannot be
+    /// sent again, when the redirect response is returned. When the origin
+    /// changes, `Authorization`, `Proxy-Authorization`, `Cookie` and `Host`
+    /// are not sent to it. The whole chain runs under one
+    /// [`total_timeout`](Self::total_timeout).
+    pub fn max_redirects(mut self, max: u32) -> Self {
+        self.max_redirects = max;
+        self
     }
 
     /// How long establishing the transport connection may take, from
@@ -166,6 +314,8 @@ impl ClientBuilder {
     fn build_with(self, trust: Trust) -> Client {
         Client {
             timeouts: self.timeouts,
+            max_redirects: self.max_redirects,
+            cookies: self.cookie_store.then(Arc::default),
             pool: Arc::new(Pool::new(self.timeouts, trust)),
             _unwind: NotUnwindSafe::default(),
         }
@@ -205,6 +355,23 @@ mod tests {
         assert_eq!(client.timeouts.tls, Duration::from_secs(2));
         assert_eq!(client.timeouts.total, Duration::from_secs(3));
         assert_eq!(Client::new().timeouts, Timeouts::default());
+    }
+
+    #[test]
+    fn builder_records_the_redirect_limit_and_defaults_to_ten() {
+        assert_eq!(Client::new().max_redirects, 10);
+        assert_eq!(Client::builder().max_redirects(0).build().max_redirects, 0);
+    }
+
+    #[test]
+    fn the_cookie_store_is_off_by_default_and_shared_by_clones() {
+        assert!(Client::new().cookies.is_none());
+        let client = Client::builder().cookie_store(true).build();
+        let clone = client.clone();
+        let (Some(store), Some(cloned)) = (&client.cookies, &clone.cookies) else {
+            panic!("both clients keep cookies");
+        };
+        assert!(std::sync::Arc::ptr_eq(store, cloned));
     }
 
     #[test]

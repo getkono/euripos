@@ -18,15 +18,26 @@ default = ["crypto-ring"]
 # client uses the process-wide rustls provider until ring can be in the graph.
 # TODO(#32): enable `rustls/ring` and `tokio-rustls/ring`.
 crypto-ring = []
+# The response content codings the client asks for and decodes, one feature
+# each; none is on by default. Each adds a pure-Rust decoder and no public
+# item (docs/design/parity.md, "Response decompression").
+gzip = ["dep:flate2"]
+brotli = ["dep:brotli-decompressor"]
+zstd = ["dep:ruzstd"]
 
 [dependencies]
+brotli-decompressor = { version = "6", optional = true }
 bytes = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
 http = "1"
 http-body = "1"
 hyper = { version = "1", default-features = false, features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["client-pool", "http1", "http2", "tokio"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 rustls-platform-verifier = "0.7"
+ruzstd = { version = "0.9", optional = true }
+serde = { version = "1", default-features = false, features = ["std"] }
+serde_json = "1"
 tokio = { version = "1", default-features = false, features = ["macros", "net", "time", "rt", "sync"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 tower-layer = "0.3"
@@ -48,7 +59,6 @@ hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1.21", features = ["server", "server-auto", "tokio"] }
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-serde_json = "1"
 socket2 = "0.6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "net", "time", "test-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

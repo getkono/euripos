@@ -52,11 +52,11 @@ Requests and responses need a representation that interoperates with the rest of
 
 ### Choice
 
-1. `Client::send<B: Into<Body>>(&self, Request<B>) -> impl Future<Output = Result<Response<Body>, Error>> + Send + 'static`. `Body` implements `http_body::Body<Data = Bytes, Error = euripos::Error>`, is `Send + Sync + Unpin` but neither `UnwindSafe` nor `RefUnwindSafe`, and converts from `Bytes`, `Vec<u8>`, `&'static [u8]`, `String`, `&'static str` and `()`; `Body::empty()` and `Default` give an empty body.
+1. `Client::send<B: Into<Body>>(&self, Request<B>) -> impl Future<Output = Result<Response<Body>, Error>> + Send + 'static`. `Body` implements `http_body::Body<Data = Bytes, Error = euripos::Error>`, is `Send + Sync + Unpin` but neither `UnwindSafe` nor `RefUnwindSafe`, and converts from `Bytes`, `Vec<u8>`, `&'static [u8]`, `String`, `&'static str` and `()`; `Body::empty()` and `Default` give an empty body. The reqwest-parity additions to `Body` (`wrap` for a streaming request body, `from_json`, `From<Form>` for a `multipart/form-data` body of `Part`s, and the `chunk`, `bytes`, `text` and `json` readers) are designed in [parity.md](parity.md).
 
 ### Rationale
 
-The `http` types are what hyper speaks, so no conversion sits on the hot path and callers reuse what they know. Re-exporting `http` makes its major version part of euripos's API, which it already is through `send`'s signature; the re-export lets callers write `euripos::http::Request` without a matching dependency. `Into<Body>` keeps the request side simple (`Request::get(uri).body(())`) and keeps `http_body`'s generic bounds out of the signature. A streaming request body is a later constructor on `Body` (for example `Body::wrap(impl http_body::Body)`), which is additive. Option 2 duplicates `http`; option 3 exposes `http_body`'s trait bounds and error conversion in every call. The future is `Send + 'static` so it can be spawned, which commits the transport to owning what it needs. Convenience builders (`client.get(url)`) are reqwest parity, decided with #8. `Body` opts out of `UnwindSafe` and `RefUnwindSafe` through a private marker field, for the same reason as `Client`: hyper's `Incoming`, which the transport (#3) puts behind it, is neither, and removing an auto trait then would be breaking.
+The `http` types are what hyper speaks, so no conversion sits on the hot path and callers reuse what they know. Re-exporting `http` makes its major version part of euripos's API, which it already is through `send`'s signature; the re-export lets callers write `euripos::http::Request` without a matching dependency. `Into<Body>` keeps the request side simple (`Request::get(uri).body(())`) and keeps `http_body`'s generic bounds out of the signature. A streaming request body is the additive constructor `Body::wrap(impl http_body::Body)` ([parity.md](parity.md), "Streaming bodies"). Option 2 duplicates `http`; option 3 exposes `http_body`'s trait bounds and error conversion in every call. The future is `Send + 'static` so it can be spawned, which commits the transport to owning what it needs. Convenience builders (`client.get(url)`) are reqwest parity, decided with #8. `Body` opts out of `UnwindSafe` and `RefUnwindSafe` through a private marker field, for the same reason as `Client`: hyper's `Incoming`, which the transport (#3) puts behind it, is neither, and removing an auto trait then would be breaking.
 
 ### Validated by
 
@@ -82,7 +82,7 @@ A caller deciding what to do about a failure needs to know what failed, not whic
 
 ### Choice
 
-1. `ErrorKind::{Connect, Tls, Timeout(TimeoutKind), Protocol, NetworkChanged, Cancelled}` and `TimeoutKind::{Connect, Tls, Total, ReadStall}`, both `#[non_exhaustive]`, `Copy + Eq + Hash`. `Display` is a lowercase message with no trailing punctuation that names the kind (`"read timed out"`) and never repeats the source. No `is_retryable`-style predicate ships.
+1. `ErrorKind::{Connect, Tls, Timeout(TimeoutKind), Protocol, NetworkChanged, Cancelled}`, with `Body`, `Decode` and `Redirect` added for the bodies and redirects [parity.md](parity.md) designs, and `TimeoutKind::{Connect, Tls, Total, ReadStall}`, both `#[non_exhaustive]`, `Copy + Eq + Hash`. `Display` is a lowercase message with no trailing punctuation that names the kind (`"read timed out"`) and never repeats the source. No `is_retryable`-style predicate ships.
 
 ### Rationale
 
@@ -179,9 +179,16 @@ Every knob is API surface to keep and a default a caller may get wrong. Scope Pr
 | `total_timeout` | The caller's own deadline for one request; the only bound on a slow but live transfer |
 | `read_stall_timeout` | reqwest has no low-speed/stall timeout ([discussion #1776](https://github.com/seanmonstar/reqwest/discussions/1776)); transfers hang after a network switch ([#1775](https://github.com/seanmonstar/reqwest/discussions/1775)) |
 
+The reqwest-parity features (#8) add the knobs whose right value only the caller knows, each designed in [parity.md](parity.md):
+
+| Knob | Evidence |
+|---|---|
+| `max_redirects` (default 10) | reqwest's redirect policy; an API client that must see every `3xx` sets `0` ([parity.md](parity.md), "Redirects") |
+| `cookie_store` (default off) | reqwest's `cookie_store`; a session behind a login needs it, and a plain client sends no cookie it was not given ([parity.md](parity.md), "Cookies") |
+
 ### Rationale
 
-Each of the four bounds a distinct failure the scope names, and each has a remedy only the caller knows (a long upload needs a longer total). An unbounded request is the reqwest gap the scope lists, so disabling one (option 2) is not offered: a caller who needs a very long bound sets one. Every other knob waits for its evidence.
+Each of the four timeouts bounds a distinct failure the scope names, and each has a remedy only the caller knows (a long upload needs a longer total). An unbounded request is the reqwest gap the scope lists, so disabling one (option 2) is not offered: a caller who needs a very long bound sets one. Every other knob waits for its evidence.
 
 ### Validated by
 
@@ -250,13 +257,13 @@ Against the [checklist](https://rust-lang.github.io/api-guidelines/checklist.htm
 | Guideline | Status |
 |---|---|
 | C-CASE, C-CONV, C-GETTER, C-ITER, C-ITER-TY | Holds: RFC 430 naming, `kind()`/`interface()` getters with no `get_`; no iterators yet |
-| C-FEATURE | Holds: `crypto-ring`, the default, names the provider it adds ([ADR 0001](../adr/0001-crypto-provider.md)); `api:cfg` renders every feature set |
+| C-FEATURE | Holds: `crypto-ring`, the default, names the provider it adds ([ADR 0001](../adr/0001-crypto-provider.md)); `gzip`, `brotli` and `zstd` name the content coding each decodes ([parity.md](parity.md)), with no `use-` or `with-` prefix; `api:cfg` renders every feature set |
 | C-WORD-ORDER | Holds: `ErrorKind`, `TimeoutKind`, `InterfaceKind` |
 | C-COMMON-TRAITS | Holds: `Debug` everywhere; `Clone`, `Eq`, `Hash` on the value types; `Copy` on the enums and `NetworkId`; `Default` on `Client`, `ClientBuilder`, `Body` |
 | C-CONV-TRAITS | Holds: `From` into `Body` |
 | C-SEND-SYNC | Holds: `Client`, `Body`, `Error` are `Send + Sync`; recorded in the snapshot |
 | C-GOOD-ERR | Holds: `Error` implements `std::error::Error`, lowercase messages, cause through `source()` |
-| C-NUM-FMT, C-SERDE | Not applicable yet |
+| C-NUM-FMT, C-SERDE | Not applicable yet: no public type is data a caller would serialize; `Body::from_json` and `Body::json` take the caller's serde types |
 | C-DEBUG, C-DEBUG-NONEMPTY | Holds |
 | C-CRATE-DOC, C-EXAMPLE | Holds: crate example sends a request and matches on a timeout kind |
 | C-QUESTION-MARK, C-FAILURE | Holds: `# Errors` and `# Panics` on `send` |
@@ -271,4 +278,4 @@ Against the [checklist](https://rust-lang.github.io/api-guidelines/checklist.htm
 | C-NEWTYPE, C-CUSTOM-TYPE, C-BITFLAG | Holds: enums, not `bool`s, for every fact; `NetworkId` is an opaque newtype |
 | C-GENERIC | Holds: `B: Into<Body>` |
 | C-SEALED, C-STRUCT-PRIVATE, C-NEWTYPE-HIDE, C-STRUCT-BOUNDS | Holds: every struct has private fields; no public traits |
-| C-STABLE, C-PERMISSIVE | Holds: `http` 1.x, `http-body` 1.x and `bytes` 1.x are the only public dependencies; MIT OR Apache-2.0 |
+| C-STABLE, C-PERMISSIVE | Holds: `http` 1.x, `http-body` 1.x, `bytes` 1.x and `serde` 1.x are the only public dependencies; MIT OR Apache-2.0 |
