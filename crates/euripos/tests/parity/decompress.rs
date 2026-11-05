@@ -99,6 +99,56 @@ async fn a_corrupt_gzip_body_fails_as_decode() {
     assert_eq!(error.kind(), euripos::ErrorKind::Decode);
 }
 
+/// A response that has no body (RFC 9110 §6.4.1) is returned as it is,
+/// `Content-Encoding` included, rather than failing to decode its empty
+/// body.
+#[cfg(feature = "gzip")]
+#[tokio::test]
+async fn a_response_with_no_body_is_returned_undecoded() {
+    let address = serve(|request: Received| {
+        let status = match request.uri().path() {
+            "/204" => 204,
+            "/304" => 304,
+            _ => 200,
+        };
+        let mut response = respond(status, ());
+        response
+            .headers_mut()
+            .insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        std::future::ready(response)
+    })
+    .await;
+    for (method, path) in [
+        (euripos::http::Method::HEAD, "/"),
+        (euripos::http::Method::GET, "/204"),
+        (euripos::http::Method::GET, "/304"),
+    ] {
+        let request = Request::builder()
+            .method(method.clone())
+            .uri(url(address, path))
+            .body(Body::empty())
+            .expect("request");
+        let response = client(|builder| builder)
+            .send(request)
+            .await
+            .expect("a response");
+        assert_eq!(
+            response.headers()[header::CONTENT_ENCODING],
+            "gzip",
+            "{method} {path}"
+        );
+        assert!(
+            response
+                .into_body()
+                .bytes()
+                .await
+                .expect("an empty body")
+                .is_empty(),
+            "{method} {path}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_request_that_sets_accept_encoding_gets_the_body_as_sent() {
     let fixture = include_bytes!("fixtures/hello.gz");
