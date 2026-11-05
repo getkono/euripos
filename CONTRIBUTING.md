@@ -31,6 +31,8 @@ mise is the task interface. CI runs these same tasks, so a green `mise run check
 
 `test:ios-sim` and `test:android` run the test binaries on a simulator or an emulator; CI uses them, and they work locally with Xcode or with an Android NDK and a device on adb.
 
+`android:dex` compiles the Android monitor's Java (`crates/euripos/src/platform/android/NetworkMonitor.java`) into the `monitor.dex` beside it, which the library embeds. It needs `ANDROID_HOME` with the platform and build-tools that `mise.toml` pins, and the JDK it pins. Commit the dex with the Java that produced it; CI's `android` job rebuilds it and fails when they differ.
+
 ## Commits and pull requests
 
 - **Conventional Commits**, checked by convco against `.convco`. Types: `feat` `fix` `docs` `test` `refactor` `perf` `build` `ci` `chore` `revert`. A scope names the area: `feat(dns): ...`, `ci(repo): ...`.

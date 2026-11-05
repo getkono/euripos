@@ -102,10 +102,6 @@ impl NetworkId {
     /// The hash is keyed once per process, so an identity printed by one
     /// process cannot be matched against keys hashed in another, and the
     /// address behind it cannot be recovered by hashing candidates.
-    #[allow(
-        dead_code,
-        reason = "called by the platforms that name networks: every one but Android, until #12"
-    )]
     pub(crate) fn from_key(key: &impl Hash) -> Self {
         static KEYS: OnceLock<RandomState> = OnceLock::new();
         Self(KEYS.get_or_init(RandomState::new).hash_one(key))

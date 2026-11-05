@@ -46,7 +46,8 @@ async fn facts_are_read_inside_a_runtime() {
         // whatever the host's network.
         assert_ne!(facts.ipv4(), IpAvailability::Unknown, "{facts:?}");
     } else {
-        // TODO(#12): Android.
+        // Android's monitor asks the JVM of the app it runs in; these tests
+        // run on the emulator outside any app, so nothing is known.
         assert_eq!(facts.ipv4(), IpAvailability::Unknown, "{facts:?}");
     }
 }

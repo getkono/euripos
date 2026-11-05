@@ -13,7 +13,7 @@ mod linux;
 mod windows;
 
 #[cfg(target_os = "android")]
-pub(crate) use android::platform_verifier;
+pub(crate) use android::{bind_to_network, network_source, platform_verifier};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) use apple::{Stream, connect, network_source};
 #[cfg(target_os = "linux")]
@@ -27,7 +27,8 @@ pub(crate) const OBSERVES_NETWORK: bool = cfg!(any(
     target_os = "linux",
     target_os = "windows",
     target_os = "macos",
-    target_os = "ios"
+    target_os = "ios",
+    target_os = "android"
 ));
 
 /// The platform's network source, opened on the monitor's runtime. `None`
@@ -37,14 +38,14 @@ pub(crate) const OBSERVES_NETWORK: bool = cfg!(any(
     target_os = "linux",
     target_os = "windows",
     target_os = "macos",
-    target_os = "ios"
+    target_os = "ios",
+    target_os = "android"
 )))]
 #[allow(
     clippy::unused_async,
     reason = "the signature is every platform's; Linux opens its source asynchronously"
 )]
 pub(crate) async fn network_source() -> Option<Unobservable> {
-    // TODO(#12): Android.
     None
 }
 
@@ -53,7 +54,8 @@ pub(crate) async fn network_source() -> Option<Unobservable> {
     target_os = "linux",
     target_os = "windows",
     target_os = "macos",
-    target_os = "ios"
+    target_os = "ios",
+    target_os = "android"
 )))]
 pub(crate) enum Unobservable {}
 
@@ -61,7 +63,8 @@ pub(crate) enum Unobservable {}
     target_os = "linux",
     target_os = "windows",
     target_os = "macos",
-    target_os = "ios"
+    target_os = "ios",
+    target_os = "android"
 )))]
 impl crate::monitor::Source for Unobservable {
     fn observe(&mut self) -> crate::NetworkFacts {
@@ -81,8 +84,9 @@ pub(crate) type Stream = tokio::net::TcpStream;
 /// Open a TCP connection to `host` (a name or an IP address) on `port`.
 ///
 /// With sockets, the host is resolved by the system resolver and each
-/// address it returns is tried in order until one accepts. A failure is
-/// [`ErrorKind::Connect`](crate::ErrorKind::Connect).
+/// address it returns is tried in order until one accepts, each socket bound
+/// first to the network the platform names ([`bind_to_network`]). A failure
+/// is [`ErrorKind::Connect`](crate::ErrorKind::Connect).
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 pub(crate) async fn connect(host: &str, port: u16) -> Result<Stream, crate::Error> {
     use crate::{Error, ErrorKind};
@@ -92,7 +96,7 @@ pub(crate) async fn connect(host: &str, port: u16) -> Result<Stream, crate::Erro
         .map_err(|error| Error::with_source(ErrorKind::Connect, error))?;
     let mut last = None;
     for address in addresses {
-        match Stream::connect(address).await {
+        match connect_to(address).await {
             Ok(tcp) => return Ok(tcp),
             Err(error) => last = Some(error),
         }
@@ -101,6 +105,30 @@ pub(crate) async fn connect(host: &str, port: u16) -> Result<Stream, crate::Erro
         Some(error) => Error::with_source(ErrorKind::Connect, error),
         None => Error::with_source(ErrorKind::Connect, "the host resolved to no address"),
     })
+}
+
+/// Connect a socket to `address`, bound to the platform's network first.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+async fn connect_to(address: std::net::SocketAddr) -> std::io::Result<Stream> {
+    let socket = if address.is_ipv4() {
+        tokio::net::TcpSocket::new_v4()?
+    } else {
+        tokio::net::TcpSocket::new_v6()?
+    };
+    bind_to_network(&socket)?;
+    socket.connect(address).await
+}
+
+/// Bind `socket`, before it connects, to the network the platform reports
+/// traffic leaves through. Only Android binds: elsewhere a socket takes the
+/// route the kernel picks when it connects.
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the signature is every platform's; Android's binding can fail"
+)]
+fn bind_to_network(_socket: &tokio::net::TcpSocket) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Whether rustls-platform-verifier can verify certificates in this process.

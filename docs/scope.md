@@ -12,7 +12,7 @@ An async Rust HTTP client at the level of reqwest: a library other Rust code lin
 | macOS | aarch64 |
 | Windows | x86_64, aarch64 |
 | iOS | aarch64 (device), aarch64 simulator |
-| Android | aarch64, x86_64 (API floor decided with the Android integration) |
+| Android | aarch64, x86_64; API 29 and later ([android.md](design/android.md)) |
 
 HTTP semantics run on hyper 1.x and hyper-util (HTTP/1.1, HTTP/2) and h3 (HTTP/3). The client picks the protocol and tunes the transport from runtime cues:
 - network and path changes;
