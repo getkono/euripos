@@ -65,6 +65,27 @@ struct Report {
     flags: u32,
     /// The proxy, `getDefaultProxy()`.
     proxy: proxy::Settings,
+    /// How many blocks on this app's traffic have ended on the network they
+    /// began on, counted here from the reports in turn; the Java side leaves
+    /// it 0.
+    resumes: u64,
+}
+
+impl Report {
+    /// `next`, with the count of ended blocks carried on from `self`, the
+    /// report before it. A block ends when the network stays the same and
+    /// [`flag::BLOCKED`] clears; every report is counted as it arrives, so a
+    /// block and its end that fall between two of the monitor's readings
+    /// still count.
+    fn then(&self, next: Self) -> Self {
+        let blocked = |report: &Self| report.flags & flag::BLOCKED != 0;
+        let ended =
+            next.handle != 0 && next.handle == self.handle && blocked(self) && !blocked(&next);
+        Self {
+            resumes: self.resumes + u64::from(ended),
+            ..next
+        }
+    }
 }
 
 /// The last report, and a wake for the monitor when it changes. One per
@@ -85,7 +106,9 @@ fn shared() -> &'static Shared {
 /// Called from the callback's thread with every report.
 fn report(report: Report) {
     let shared = shared();
-    *shared.report.lock().unwrap_or_else(PoisonError::into_inner) = report;
+    let mut last = shared.report.lock().unwrap_or_else(PoisonError::into_inner);
+    *last = last.then(report);
+    drop(last);
     shared.notify.notify_one();
 }
 
@@ -110,15 +133,24 @@ pub(crate) async fn network_source() -> Option<AndroidSource> {
         return None;
     }
     let _ = tokio::time::timeout(FIRST_REPORT, shared().notify.notified()).await;
-    Some(AndroidSource)
+    Some(AndroidSource { resumes: 0 })
 }
 
 /// The Android network source: what the callback last reported.
-pub(crate) struct AndroidSource;
+pub(crate) struct AndroidSource {
+    /// The count of ended blocks in the report last observed.
+    resumes: u64,
+}
 
 impl Source for AndroidSource {
     fn observe(&mut self) -> NetworkFacts {
-        facts(&last())
+        let report = last();
+        self.resumes = report.resumes;
+        facts(&report)
+    }
+
+    fn resumes(&self) -> u64 {
+        self.resumes
     }
 
     async fn changed(&mut self) {
@@ -165,7 +197,6 @@ fn facts(report: &Report) -> NetworkFacts {
         ipv4: route(flag::IPV4),
         ipv6: route(flag::IPV6),
         proxy: report.proxy.config(),
-        blocked: has(flag::BLOCKED),
     }
 }
 
@@ -270,6 +301,7 @@ mod tests {
             transports,
             flags,
             proxy: proxy::Settings::default(),
+            resumes: 0,
         }
     }
 
@@ -311,7 +343,6 @@ mod tests {
         assert_eq!(facts.ipv4, IpAvailability::Unknown);
         assert_eq!(facts.ipv6, IpAvailability::Unknown);
         assert_eq!(facts.proxy, ProxyConfig::Direct);
-        assert!(!facts.blocked);
     }
 
     #[test]
@@ -368,9 +399,35 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_network_is_reported_blocked() {
-        assert!(facts(&on(7, 1, KNOWN | flag::BLOCKED)).blocked);
-        assert!(!facts(&on(7, 1, KNOWN)).blocked);
+    fn the_end_of_a_block_on_the_same_network_counts_as_a_resume() {
+        let blocked = on(7, 1, KNOWN | flag::BLOCKED);
+        let open = on(7, 1, KNOWN);
+        let ended = |reports: &[Report]| {
+            reports
+                .iter()
+                .fold(Report::default(), |last, next| last.then(next.clone()))
+                .resumes
+        };
+        assert_eq!(ended(&[open.clone(), blocked.clone()]), 0);
+        assert_eq!(ended(&[blocked.clone(), open.clone()]), 1);
+        // A block and its end, then another, with other reports between.
+        assert_eq!(
+            ended(&[
+                blocked.clone(),
+                blocked.clone(),
+                open.clone(),
+                open.clone(),
+                blocked.clone(),
+                open.clone(),
+            ]),
+            2
+        );
+        // A block that ends on another network, or with none, is that
+        // network's change, not a resume.
+        assert_eq!(ended(&[blocked.clone(), on(8, 1, KNOWN)]), 0);
+        assert_eq!(ended(&[blocked, Report::default()]), 0);
+        // Being blocked does not change the facts.
+        assert_eq!(facts(&on(7, 1, KNOWN | flag::BLOCKED)), facts(&open));
     }
 
     #[test]

@@ -97,7 +97,6 @@ fn read(kernel: &mut Kernel, metering: Metering) -> io::Result<NetworkFacts> {
         ipv4: availability(v4.as_ref()),
         ipv6: availability(v6.as_ref()),
         proxy: proxy_config(|name| env::var_os(name)),
-        ..NetworkFacts::UNKNOWN
     })
 }
 

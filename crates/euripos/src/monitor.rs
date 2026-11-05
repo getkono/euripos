@@ -44,13 +44,46 @@ pub(crate) trait Source {
     /// a local system call: the monitor has its thread to itself.
     fn observe(&mut self) -> NetworkFacts;
 
+    /// How many blocks the platform put on this process's traffic and then
+    /// ended on the same network, counted from when the source opened, as of
+    /// the last [`observe`](Self::observe). Counted by the platform as each
+    /// block ends, so a block that begins and ends between two readings is
+    /// still counted. Only Android blocks traffic (Doze, App Standby).
+    fn resumes(&self) -> u64 {
+        0
+    }
+
     /// Resolves when something the facts are read from may have changed.
     ///
     /// Cancel-safe: the monitor drops it to stop waiting.
     fn changed(&mut self) -> impl Future<Output = ()>;
 }
 
-/// A change between two published sets of facts.
+/// What the monitor publishes: the facts, and the platform's count of ended
+/// blocks ([`Source::resumes`]). The count is internal, so it stays out of
+/// [`NetworkFacts`] and the public impls derived on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Reading {
+    pub(crate) facts: NetworkFacts,
+    pub(crate) resumes: u64,
+}
+
+impl Reading {
+    const UNKNOWN: Self = Self {
+        facts: NetworkFacts::UNKNOWN,
+        resumes: 0,
+    };
+
+    fn of<S: Source>(source: &mut S) -> Self {
+        let facts = source.observe();
+        Self {
+            facts,
+            resumes: source.resumes(),
+        }
+    }
+}
+
+/// A change between two published readings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     not(test),
@@ -72,12 +105,18 @@ pub(crate) enum NetworkEvent {
 impl NetworkEvent {
     /// The event that turns `from` into `to`, if they differ.
     #[cfg_attr(not(test), expect(dead_code, reason = "consumed by #6"))]
-    pub(crate) fn between(from: &NetworkFacts, to: &NetworkFacts) -> Option<Self> {
-        match (from.network, to.network) {
-            (_, Some(network)) if from.network != to.network => Some(Self::Changed(network)),
+    ///
+    /// A resume is told from the count of ended blocks, not from a blocked
+    /// state in the two readings: a block that began and ended between them
+    /// leaves the facts as they were.
+    pub(crate) fn between(from: &Reading, to: &Reading) -> Option<Self> {
+        match (from.facts.network, to.facts.network) {
+            (_, Some(network)) if from.facts.network != to.facts.network => {
+                Some(Self::Changed(network))
+            }
             (Some(_), None) => Some(Self::Lost),
-            _ if from.blocked && !to.blocked => Some(Self::Resumed),
-            _ if from != to => Some(Self::FactsChanged),
+            _ if from.resumes != to.resumes => Some(Self::Resumed),
+            _ if from.facts != to.facts => Some(Self::FactsChanged),
             _ => None,
         }
     }
@@ -85,7 +124,7 @@ impl NetworkEvent {
 
 /// The process-wide network monitor.
 pub(crate) struct NetworkMonitor {
-    facts: watch::Receiver<NetworkFacts>,
+    facts: watch::Receiver<Reading>,
 }
 
 impl NetworkMonitor {
@@ -105,7 +144,7 @@ impl NetworkMonitor {
         if !platform::OBSERVES_NETWORK {
             return None;
         }
-        let (tx, rx) = watch::channel(NetworkFacts::UNKNOWN);
+        let (tx, rx) = watch::channel(Reading::UNKNOWN);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         thread::Builder::new()
             .name("euripos-network".into())
@@ -120,8 +159,8 @@ impl NetworkMonitor {
                     let Some(source) = platform::network_source().await else {
                         return;
                     };
-                    run(source, |facts| {
-                        tx.send_replace(facts);
+                    run(source, |reading| {
+                        tx.send_replace(reading);
                         // The first reading is in; a caller may have given up waiting.
                         let _ = ready_tx.try_send(());
                     })
@@ -136,7 +175,7 @@ impl NetworkMonitor {
 
     /// The facts published last.
     pub(crate) fn facts(&self) -> NetworkFacts {
-        self.facts.borrow().clone()
+        self.facts.borrow().facts.clone()
     }
 
     /// The changes published from now on.
@@ -149,11 +188,12 @@ impl NetworkMonitor {
 }
 
 /// The changes a monitor publishes, in order. Changes published faster than
-/// they are read are folded into one, from the last facts read to the newest.
+/// they are read are folded into one, from the last reading read to the
+/// newest.
 #[cfg_attr(not(test), expect(dead_code, reason = "consumed by #6"))]
 pub(crate) struct Changes {
-    facts: watch::Receiver<NetworkFacts>,
-    last: NetworkFacts,
+    facts: watch::Receiver<Reading>,
+    last: Reading,
 }
 
 #[cfg_attr(not(test), expect(dead_code, reason = "consumed by #6"))]
@@ -175,8 +215,8 @@ impl Changes {
 /// What to do with a reading.
 #[derive(Debug, PartialEq, Eq)]
 enum Step {
-    /// Publish these facts.
-    Publish(NetworkFacts),
+    /// Publish this reading.
+    Publish(Reading),
     /// Read again after [`CONFIRM`]; publish nothing yet.
     Confirm,
     /// Nothing to publish.
@@ -185,25 +225,25 @@ enum Step {
 
 /// Decides which readings are published.
 ///
-/// A reading on the network published last is published as soon as any fact
-/// differs. A reading on another network, or on none, is held until the next
-/// reading names the same network, so a reading taken while the platform is
-/// mid-change is never published on its own.
+/// A reading on the network published last is published as soon as any fact,
+/// or the count of ended blocks, differs. A reading on another network, or on
+/// none, is held until the next reading names the same network, so a reading
+/// taken while the platform is mid-change is never published on its own.
 struct Settler {
-    published: NetworkFacts,
-    candidate: Option<NetworkFacts>,
+    published: Reading,
+    candidate: Option<Reading>,
 }
 
 impl Settler {
-    fn new(published: NetworkFacts) -> Self {
+    fn new(published: Reading) -> Self {
         Self {
             published,
             candidate: None,
         }
     }
 
-    fn step(&mut self, reading: NetworkFacts) -> Step {
-        if reading.network == self.published.network {
+    fn step(&mut self, reading: Reading) -> Step {
+        if reading.facts.network == self.published.facts.network {
             self.candidate = None;
             if reading == self.published {
                 return Step::Hold;
@@ -211,7 +251,7 @@ impl Settler {
         } else if self
             .candidate
             .take()
-            .is_none_or(|candidate| candidate.network != reading.network)
+            .is_none_or(|candidate| candidate.facts.network != reading.facts.network)
         {
             self.candidate = Some(reading);
             return Step::Confirm;
@@ -223,8 +263,8 @@ impl Settler {
 
 /// Run the monitor over `source`, calling `publish` with the first reading
 /// and with every change after it. Never returns.
-async fn run<S: Source>(mut source: S, mut publish: impl FnMut(NetworkFacts)) {
-    let first = source.observe();
+async fn run<S: Source>(mut source: S, mut publish: impl FnMut(Reading)) {
+    let first = Reading::of(&mut source);
     publish(first.clone());
     let mut settler = Settler::new(first);
     let mut confirm_at = None;
@@ -235,8 +275,8 @@ async fn run<S: Source>(mut source: S, mut publish: impl FnMut(NetworkFacts)) {
             source.changed().await;
             settle(&mut source).await;
         }
-        match settler.step(source.observe()) {
-            Step::Publish(facts) => publish(facts),
+        match settler.step(Reading::of(&mut source)) {
+            Step::Publish(reading) => publish(reading),
             Step::Confirm => confirm_at = Some(Instant::now() + CONFIRM),
             Step::Hold => {}
         }
@@ -276,41 +316,63 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio::time::sleep;
 
-    use super::{CONFIRM, MAX_SETTLE, NetworkEvent, Settler, Source, Step, run};
+    use super::{CONFIRM, MAX_SETTLE, NetworkEvent, Reading, Settler, Source, Step, run};
     use crate::facts::{IpAvailability, Metering, NetworkFacts, NetworkId};
 
-    fn on(network: u32) -> NetworkFacts {
-        NetworkFacts {
+    fn reading(facts: NetworkFacts) -> Reading {
+        Reading { facts, resumes: 0 }
+    }
+
+    fn on(network: u32) -> Reading {
+        reading(NetworkFacts {
             network: Some(NetworkId::from_key(&network)),
             ipv4: IpAvailability::Available,
             ..NetworkFacts::UNKNOWN
-        }
+        })
     }
 
-    fn lost() -> NetworkFacts {
-        NetworkFacts {
+    fn metered(network: u32) -> Reading {
+        let mut metered = on(network);
+        metered.facts.metering = Metering::Metered;
+        metered
+    }
+
+    fn lost() -> Reading {
+        reading(NetworkFacts {
             ipv4: IpAvailability::Unavailable,
             ipv6: IpAvailability::Unavailable,
             ..NetworkFacts::UNKNOWN
-        }
+        })
     }
 
-    /// A platform whose facts and signals the test sets.
+    /// `reading` once the platform has ended `resumes` blocks.
+    fn resumed(reading: Reading, resumes: u64) -> Reading {
+        Reading { resumes, ..reading }
+    }
+
+    /// A platform whose readings and signals the test sets.
     #[derive(Clone)]
     struct Fake {
-        now: Rc<RefCell<NetworkFacts>>,
+        now: Rc<RefCell<Reading>>,
         readings: Rc<Cell<usize>>,
     }
 
     struct FakeSource {
         fake: Fake,
         signals: mpsc::UnboundedReceiver<()>,
+        resumes: u64,
     }
 
     impl Source for FakeSource {
         fn observe(&mut self) -> NetworkFacts {
             self.fake.readings.set(self.fake.readings.get() + 1);
-            self.fake.now.borrow().clone()
+            let now = self.fake.now.borrow().clone();
+            self.resumes = now.resumes;
+            now.facts
+        }
+
+        fn resumes(&self) -> u64 {
+            self.resumes
         }
 
         async fn changed(&mut self) {
@@ -322,13 +384,7 @@ mod tests {
 
     /// Run the monitor over a fake platform that starts on `initial`, and
     /// return the fake, its signal sender and every published reading.
-    fn start(
-        initial: NetworkFacts,
-    ) -> (
-        Fake,
-        mpsc::UnboundedSender<()>,
-        Rc<RefCell<Vec<NetworkFacts>>>,
-    ) {
+    fn start(initial: Reading) -> (Fake, mpsc::UnboundedSender<()>, Rc<RefCell<Vec<Reading>>>) {
         let fake = Fake {
             now: Rc::new(RefCell::new(initial)),
             readings: Rc::new(Cell::new(0)),
@@ -338,14 +394,15 @@ mod tests {
         let source = FakeSource {
             fake: fake.clone(),
             signals,
+            resumes: 0,
         };
         let sink = Rc::clone(&published);
-        tokio::task::spawn_local(run(source, move |facts| sink.borrow_mut().push(facts)));
+        tokio::task::spawn_local(run(source, move |reading| sink.borrow_mut().push(reading)));
         (fake, signal, published)
     }
 
-    fn set(fake: &Fake, facts: NetworkFacts) {
-        *fake.now.borrow_mut() = facts;
+    fn set(fake: &Fake, reading: Reading) {
+        *fake.now.borrow_mut() = reading;
     }
 
     async fn local<F: Future>(test: F) -> F::Output {
@@ -469,14 +526,10 @@ mod tests {
         local(async {
             let (fake, signal, published) = start(on(1));
             sleep(Duration::from_millis(1)).await;
-            let metered = NetworkFacts {
-                metering: Metering::Metered,
-                ..on(1)
-            };
-            set(&fake, metered.clone());
+            set(&fake, metered(1));
             signal.send(()).unwrap();
             sleep(CONFIRM / 2).await;
-            assert_eq!(*published.borrow(), [on(1), metered]);
+            assert_eq!(*published.borrow(), [on(1), metered(1)]);
         })
         .await;
     }
@@ -496,10 +549,6 @@ mod tests {
 
     #[test]
     fn events_name_what_changed() {
-        let metered = NetworkFacts {
-            metering: Metering::Metered,
-            ..on(1)
-        };
         assert_eq!(
             NetworkEvent::between(&on(1), &on(2)),
             Some(NetworkEvent::Changed(NetworkId::from_key(&2_u32)))
@@ -513,7 +562,7 @@ mod tests {
             Some(NetworkEvent::Lost)
         );
         assert_eq!(
-            NetworkEvent::between(&on(1), &metered),
+            NetworkEvent::between(&on(1), &metered(1)),
             Some(NetworkEvent::FactsChanged)
         );
         assert_eq!(NetworkEvent::between(&on(1), &on(1)), None);
@@ -521,64 +570,53 @@ mod tests {
 
     #[test]
     fn the_end_of_a_block_on_the_same_network_is_a_resume() {
-        let blocked = NetworkFacts {
-            blocked: true,
-            ..on(1)
-        };
         assert_eq!(
-            NetworkEvent::between(&on(1), &blocked),
-            Some(NetworkEvent::FactsChanged)
+            NetworkEvent::between(&on(1), &resumed(on(1), 1)),
+            Some(NetworkEvent::Resumed)
         );
+        // Two blocks ended between readings are one resume.
         assert_eq!(
-            NetworkEvent::between(&blocked, &on(1)),
+            NetworkEvent::between(&resumed(on(1), 1), &resumed(on(1), 3)),
+            Some(NetworkEvent::Resumed)
+        );
+        // A resume names itself over another fact that changed with it.
+        assert_eq!(
+            NetworkEvent::between(&on(1), &resumed(metered(1), 1)),
             Some(NetworkEvent::Resumed)
         );
         // A resume onto another network is that network's change.
         assert_eq!(
-            NetworkEvent::between(&blocked, &on(2)),
+            NetworkEvent::between(&on(1), &resumed(on(2), 1)),
             Some(NetworkEvent::Changed(NetworkId::from_key(&2_u32)))
         );
     }
 
-    // Doze ends: the block is published at once, as any fact on the same
-    // network is, and so is its end.
+    // Doze ends: its end is published at once, as any fact on the same
+    // network is.
     #[tokio::test(start_paused = true)]
-    async fn a_block_and_its_end_are_published_without_confirmation() {
+    async fn the_end_of_a_block_is_published_without_confirmation() {
         local(async {
             let (fake, signal, published) = start(on(1));
             sleep(Duration::from_millis(1)).await;
-            let blocked = NetworkFacts {
-                blocked: true,
-                ..on(1)
-            };
-            set(&fake, blocked.clone());
+            set(&fake, resumed(on(1), 1));
             signal.send(()).unwrap();
             sleep(CONFIRM / 2).await;
-            set(&fake, on(1));
-            signal.send(()).unwrap();
-            sleep(CONFIRM / 2).await;
-            assert_eq!(*published.borrow(), [on(1), blocked, on(1)]);
+            assert_eq!(*published.borrow(), [on(1), resumed(on(1), 1)]);
         })
         .await;
     }
 
     // Doze ends before the signals settle, as when a frozen app thaws: the
-    // reading after them equals the one before the block.
+    // facts after them equal those before the block.
     #[tokio::test(start_paused = true)]
     async fn a_block_ended_within_one_settle_window_is_a_resume() {
         local(async {
             let (fake, signal, published) = start(on(1));
             sleep(Duration::from_millis(1)).await;
-            set(
-                &fake,
-                NetworkFacts {
-                    blocked: true,
-                    ..on(1)
-                },
-            );
+            // The block begins: the platform signals and nothing else changes.
             signal.send(()).unwrap();
             sleep(Duration::from_millis(10)).await;
-            set(&fake, on(1));
+            set(&fake, resumed(on(1), 1));
             signal.send(()).unwrap();
             sleep(Duration::from_secs(10)).await;
             let published = published.borrow();
@@ -591,17 +629,15 @@ mod tests {
         .await;
     }
 
-    // A block and its end both published before the reader reads.
+    // The end of a block and a later change on the same network, both
+    // published before the reader reads.
     #[tokio::test(start_paused = true)]
     async fn a_block_and_its_end_folded_into_one_change_are_a_resume() {
         let (tx, rx) = tokio::sync::watch::channel(on(1));
         let monitor = super::NetworkMonitor { facts: rx };
         let mut changes = monitor.changes();
-        tx.send_replace(NetworkFacts {
-            blocked: true,
-            ..on(1)
-        });
-        tx.send_replace(on(1));
+        tx.send_replace(resumed(on(1), 1));
+        tx.send_replace(resumed(metered(1), 1));
         let next = tokio::time::timeout(Duration::from_secs(1), changes.next()).await;
         assert_eq!(next, Ok(Some(NetworkEvent::Resumed)));
     }

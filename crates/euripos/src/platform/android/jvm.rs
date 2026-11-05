@@ -154,6 +154,8 @@ extern "system" fn changed<'local>(
                 exclusions.as_deref(),
                 string(env, &pac)?,
             ),
+            // Counted from the reports in turn, by `super::report`.
+            resumes: 0,
         });
         Ok(())
     })
