@@ -456,6 +456,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_reset_after_ready_fails_reads_then_writes_and_flushes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut tcp, _) = listener.accept().await.unwrap();
+            tcp.write_all(b"hello").await.unwrap();
+            // A zero linger makes the close a reset rather than a FIN.
+            socket2::SockRef::from(&tcp)
+                .set_linger(Some(Duration::ZERO))
+                .unwrap();
+            let mut byte = [0; 1];
+            // Until the client has read the greeting and asks for more.
+            tcp.read_exact(&mut byte).await.unwrap();
+            drop(tcp);
+        });
+        let mut stream = tokio::time::timeout(BOUND, connect("127.0.0.1", port))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut greeting = [0; 5];
+        stream.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(&greeting, b"hello");
+        stream.write_all(b"!").await.unwrap();
+        stream.flush().await.unwrap();
+        server.await.unwrap();
+
+        // The receive outstanding when the reset arrives completes with it.
+        let mut rest = [0; 1];
+        tokio::time::timeout(BOUND, stream.read(&mut rest))
+            .await
+            .unwrap()
+            .unwrap_err();
+
+        // A write after the reset is handed over, and its failed send fails
+        // the next write or flush.
+        tokio::time::timeout(BOUND, async {
+            for _ in 0..100 {
+                if stream.write_all(b"after").await.is_err() || stream.flush().await.is_err() {
+                    return;
+                }
+            }
+            panic!("no write or flush failed after the reset");
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn a_refused_connection_fails_as_connect() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
