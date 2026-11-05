@@ -112,11 +112,11 @@ Callers adapt to the network too (defer a sync on a metered link, shrink an uplo
 
 ### Choice
 
-1. `Client::network_facts(&self) -> NetworkFacts`, with `interface() -> InterfaceKind { Wifi, Cellular, Ethernet, Other, Unknown }`, `metering() -> Metering { Unmetered, TemporarilyUnmetered, Metered, Unknown }` and `constraint() -> Constraint { Unconstrained, Constrained, UltraConstrained, Unknown }`. Every enum is `#[non_exhaustive]`. `NetworkFacts` is `Clone` but not `Copy`, and has no public constructor. Until the platform monitors land (#4 on Linux, #11, #12 and #13), every fact is `Unknown`.
+1. `Client::network_facts(&self) -> NetworkFacts`, with `interface() -> InterfaceKind { Wifi, Cellular, Ethernet, Other, Unknown }`, `metering() -> Metering { Unmetered, TemporarilyUnmetered, Metered, Unknown }` and `constraint() -> Constraint { Unconstrained, Constrained, UltraConstrained, Unknown }`. Every enum is `#[non_exhaustive]`. `NetworkFacts` is `Clone` but not `Copy`, and has no public constructor. It also carries `network() -> Option<NetworkId>`, an opaque identity for the network, `ipv4()` and `ipv6() -> IpAvailability { Available, Unavailable, Unknown }` and `proxy() -> ProxyConfig { Direct, Manual, Automatic, Unknown }`, designed in [network-context.md](network-context.md). Linux reports them through its monitor; until the other platforms' monitors land (#11, #12 and #13), every fact there is `Unknown` and `network()` is `None`.
 
 ### Rationale
 
-An explicit `Unknown` variant makes the caller name the unknown case where it matches, so it cannot be mistaken for absence the way `None` (option 2) is read as "no". Option 3 nests every match one level deeper for no gain. `TemporarilyUnmetered` is Android's `TEMPORARILY_NOT_METERED`, which a caller treats differently from `Unmetered`; `UltraConstrained` is Apple's ultra-constrained path. Private fields and getters let a fact be added without a breaking change; not being `Copy` lets a later fact hold data that is not. Change notifications are left out until a consumer needs them: they are an additive method.
+An explicit `Unknown` variant makes the caller name the unknown case where it matches, so it cannot be mistaken for absence the way `None` (option 2) is read as "no". Option 3 nests every match one level deeper for no gain. `TemporarilyUnmetered` is Android's `TEMPORARILY_NOT_METERED`, which a caller treats differently from `Unmetered`; `UltraConstrained` is Apple's ultra-constrained path. Private fields and getters let a fact be added without a breaking change; not being `Copy` lets a later fact hold data that is not. Change notifications are left out until a caller needs them: they are an additive method. The internal monitor that produces them for the pool is in [network-context.md](network-context.md).
 
 ### Validated by
 
@@ -252,7 +252,7 @@ Against the [checklist](https://rust-lang.github.io/api-guidelines/checklist.htm
 | C-CASE, C-CONV, C-GETTER, C-ITER, C-ITER-TY | Holds: RFC 430 naming, `kind()`/`interface()` getters with no `get_`; no iterators yet |
 | C-FEATURE | Holds: `crypto-ring`, the default, names the provider it adds ([ADR 0001](../adr/0001-crypto-provider.md)); `api:cfg` renders every feature set |
 | C-WORD-ORDER | Holds: `ErrorKind`, `TimeoutKind`, `InterfaceKind` |
-| C-COMMON-TRAITS | Holds: `Debug` everywhere; `Clone`, `Eq`, `Hash` on the value types; `Copy` on the enums; `Default` on `Client`, `ClientBuilder`, `Body` |
+| C-COMMON-TRAITS | Holds: `Debug` everywhere; `Clone`, `Eq`, `Hash` on the value types; `Copy` on the enums and `NetworkId`; `Default` on `Client`, `ClientBuilder`, `Body` |
 | C-CONV-TRAITS | Holds: `From` into `Body` |
 | C-SEND-SYNC | Holds: `Client`, `Body`, `Error` are `Send + Sync`; recorded in the snapshot |
 | C-GOOD-ERR | Holds: `Error` implements `std::error::Error`, lowercase messages, cause through `source()` |
@@ -268,7 +268,7 @@ Against the [checklist](https://rust-lang.github.io/api-guidelines/checklist.htm
 | C-CALLER-CONTROL, C-INTERMEDIATE, C-OBJECT | Holds: `send` takes the request by value |
 | C-BUILDER | Holds: consuming `ClientBuilder` |
 | C-VALIDATE, C-DTOR-FAIL, C-DTOR-BLOCK | Holds: setters take only valid `Duration`s; no `Drop` |
-| C-NEWTYPE, C-CUSTOM-TYPE, C-BITFLAG | Holds: enums, not `bool`s, for every fact |
+| C-NEWTYPE, C-CUSTOM-TYPE, C-BITFLAG | Holds: enums, not `bool`s, for every fact; `NetworkId` is an opaque newtype |
 | C-GENERIC | Holds: `B: Into<Body>` |
 | C-SEALED, C-STRUCT-PRIVATE, C-NEWTYPE-HIDE, C-STRUCT-BOUNDS | Holds: every struct has private fields; no public traits |
 | C-STABLE, C-PERMISSIVE | Holds: `http` 1.x, `http-body` 1.x and `bytes` 1.x are the only public dependencies; MIT OR Apache-2.0 |

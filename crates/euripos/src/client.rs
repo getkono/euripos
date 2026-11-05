@@ -8,6 +8,7 @@ use std::time::Duration;
 use http::{Request, Response};
 
 use crate::marker::NotUnwindSafe;
+use crate::monitor::NetworkMonitor;
 use crate::pool::{Dst, Pool};
 use crate::timeout::{Timeouts, deadline, until};
 use crate::tls::Trust;
@@ -84,11 +85,12 @@ impl Client {
 
     /// What the platform reports about the network the client is using now.
     ///
-    /// A fact the platform does not report is `Unknown`.
+    /// A fact the platform does not report is `Unknown`. The first call in a
+    /// process starts watching the network, which may block it for up to
+    /// half a second; later calls return at once.
     #[must_use]
     pub fn network_facts(&self) -> NetworkFacts {
-        // TODO(#4): read the platform's network monitor.
-        NetworkFacts::UNKNOWN
+        NetworkMonitor::global().map_or(NetworkFacts::UNKNOWN, NetworkMonitor::facts)
     }
 }
 

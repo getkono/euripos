@@ -38,6 +38,7 @@ mod client;
 mod error;
 mod facts;
 mod marker;
+mod monitor;
 mod platform;
 mod pool;
 mod timeout;
@@ -46,7 +47,9 @@ mod tls;
 pub use body::Body;
 pub use client::{Client, ClientBuilder};
 pub use error::{Error, ErrorKind, TimeoutKind};
-pub use facts::{Constraint, InterfaceKind, Metering, NetworkFacts};
+pub use facts::{
+    Constraint, InterfaceKind, IpAvailability, Metering, NetworkFacts, NetworkId, ProxyConfig,
+};
 
 /// The [`http`](https://docs.rs/http/1) crate, whose `Request` and `Response`
 /// this client sends and returns.

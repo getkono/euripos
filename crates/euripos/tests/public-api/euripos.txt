@@ -74,6 +74,28 @@ impl core::marker::Unpin for euripos::InterfaceKind
 impl core::marker::UnsafeUnpin for euripos::InterfaceKind
 impl core::panic::unwind_safe::RefUnwindSafe for euripos::InterfaceKind
 impl core::panic::unwind_safe::UnwindSafe for euripos::InterfaceKind
+#[non_exhaustive] pub enum euripos::IpAvailability
+pub euripos::IpAvailability::Available
+pub euripos::IpAvailability::Unavailable
+pub euripos::IpAvailability::Unknown
+impl core::clone::Clone for euripos::IpAvailability
+pub fn euripos::IpAvailability::clone(&self) -> Self
+impl core::cmp::Eq for euripos::IpAvailability
+impl core::cmp::PartialEq for euripos::IpAvailability
+pub fn euripos::IpAvailability::eq(&self, &Self) -> bool
+impl core::fmt::Debug for euripos::IpAvailability
+pub fn euripos::IpAvailability::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for euripos::IpAvailability
+pub fn euripos::IpAvailability::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for euripos::IpAvailability
+impl core::marker::StructuralPartialEq for euripos::IpAvailability
+impl core::marker::Freeze for euripos::IpAvailability
+impl core::marker::Send for euripos::IpAvailability
+impl core::marker::Sync for euripos::IpAvailability
+impl core::marker::Unpin for euripos::IpAvailability
+impl core::marker::UnsafeUnpin for euripos::IpAvailability
+impl core::panic::unwind_safe::RefUnwindSafe for euripos::IpAvailability
+impl core::panic::unwind_safe::UnwindSafe for euripos::IpAvailability
 #[non_exhaustive] pub enum euripos::Metering
 pub euripos::Metering::Metered
 pub euripos::Metering::TemporarilyUnmetered
@@ -97,6 +119,29 @@ impl core::marker::Unpin for euripos::Metering
 impl core::marker::UnsafeUnpin for euripos::Metering
 impl core::panic::unwind_safe::RefUnwindSafe for euripos::Metering
 impl core::panic::unwind_safe::UnwindSafe for euripos::Metering
+#[non_exhaustive] pub enum euripos::ProxyConfig
+pub euripos::ProxyConfig::Automatic
+pub euripos::ProxyConfig::Direct
+pub euripos::ProxyConfig::Manual
+pub euripos::ProxyConfig::Unknown
+impl core::clone::Clone for euripos::ProxyConfig
+pub fn euripos::ProxyConfig::clone(&self) -> Self
+impl core::cmp::Eq for euripos::ProxyConfig
+impl core::cmp::PartialEq for euripos::ProxyConfig
+pub fn euripos::ProxyConfig::eq(&self, &Self) -> bool
+impl core::fmt::Debug for euripos::ProxyConfig
+pub fn euripos::ProxyConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for euripos::ProxyConfig
+pub fn euripos::ProxyConfig::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for euripos::ProxyConfig
+impl core::marker::StructuralPartialEq for euripos::ProxyConfig
+impl core::marker::Freeze for euripos::ProxyConfig
+impl core::marker::Send for euripos::ProxyConfig
+impl core::marker::Sync for euripos::ProxyConfig
+impl core::marker::Unpin for euripos::ProxyConfig
+impl core::marker::UnsafeUnpin for euripos::ProxyConfig
+impl core::panic::unwind_safe::RefUnwindSafe for euripos::ProxyConfig
+impl core::panic::unwind_safe::UnwindSafe for euripos::ProxyConfig
 #[non_exhaustive] pub enum euripos::TimeoutKind
 pub euripos::TimeoutKind::Connect
 pub euripos::TimeoutKind::ReadStall
@@ -212,7 +257,11 @@ pub struct euripos::NetworkFacts
 impl euripos::NetworkFacts
 pub fn euripos::NetworkFacts::constraint(&self) -> euripos::Constraint
 pub fn euripos::NetworkFacts::interface(&self) -> euripos::InterfaceKind
+pub fn euripos::NetworkFacts::ipv4(&self) -> euripos::IpAvailability
+pub fn euripos::NetworkFacts::ipv6(&self) -> euripos::IpAvailability
 pub fn euripos::NetworkFacts::metering(&self) -> euripos::Metering
+pub fn euripos::NetworkFacts::network(&self) -> core::option::Option<euripos::NetworkId>
+pub fn euripos::NetworkFacts::proxy(&self) -> euripos::ProxyConfig
 impl core::clone::Clone for euripos::NetworkFacts
 pub fn euripos::NetworkFacts::clone(&self) -> Self
 impl core::cmp::Eq for euripos::NetworkFacts
@@ -230,3 +279,22 @@ impl core::marker::Unpin for euripos::NetworkFacts
 impl core::marker::UnsafeUnpin for euripos::NetworkFacts
 impl core::panic::unwind_safe::RefUnwindSafe for euripos::NetworkFacts
 impl core::panic::unwind_safe::UnwindSafe for euripos::NetworkFacts
+pub struct euripos::NetworkId(_)
+impl core::clone::Clone for euripos::NetworkId
+pub fn euripos::NetworkId::clone(&self) -> Self
+impl core::cmp::Eq for euripos::NetworkId
+impl core::cmp::PartialEq for euripos::NetworkId
+pub fn euripos::NetworkId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for euripos::NetworkId
+pub fn euripos::NetworkId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for euripos::NetworkId
+pub fn euripos::NetworkId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for euripos::NetworkId
+impl core::marker::StructuralPartialEq for euripos::NetworkId
+impl core::marker::Freeze for euripos::NetworkId
+impl core::marker::Send for euripos::NetworkId
+impl core::marker::Sync for euripos::NetworkId
+impl core::marker::Unpin for euripos::NetworkId
+impl core::marker::UnsafeUnpin for euripos::NetworkId
+impl core::panic::unwind_safe::RefUnwindSafe for euripos::NetworkId
+impl core::panic::unwind_safe::UnwindSafe for euripos::NetworkId
