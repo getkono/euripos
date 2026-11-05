@@ -59,7 +59,7 @@ A lookup costs a round trip to a resolver that is often across the access networ
 
 ### Rationale
 
-Option 2 needs the cache to observe network changes in order, and serves a stale answer between a change and its event. With the network in the key, an answer cannot cross networks whatever the ordering, and an answer from a network the client returns to stays good for its TTL. Option 3 is not per network on Linux (hickory's cache, which is turned off) and is not observable on the other platforms. Failures are not cached, so a resolver that was briefly unreachable does not hide the records for the negative TTL.
+The key holds only as far as the query went to the network the key names, and that differs by platform. On Android the lookup's network is routed into the query: it is sent on that network's handle, and where the callback no longer reports that network the query is not sent and nothing is cached, so an answer there cannot cross networks whatever the ordering. On Linux and on Apple platforms the system resolver answers for the network it is on and cannot be asked about another, so a lookup that straddles a change, or that runs after the change and before the client reports it, can cache the new network's answer under the old `NetworkId`. This is a known gap on those platforms: the entry serves lookups keyed to the old network, including after a return to it, for the entry's TTL at most (capped at a day). Answers cached under the new network's own `NetworkId` come from queries made after the client reported it, on the resolver the system then holds. Option 2 has the same straddling window, from its other side: an answer stored after the change but before its event is cleared with everything else, while one stored after the event but answered by the old network's resolver survives as the new network's. It also discards answers for a network the client returns to, which option 1 keeps for their TTL. Option 3 is not per network on Linux (hickory's cache, which is turned off) and is not observable on the other platforms. Failures are not cached, so a resolver that was briefly unreachable does not hide the records for the negative TTL.
 
 ### Validated by
 
@@ -167,7 +167,7 @@ API 29 is the floor (#12), the level `android_res_nquery` arrived at.
 
 ### Choice
 
-1. `platform::android::dns::query_https`. The response is read by `dns::message`; `NXDOMAIN` and `NOERROR` without records are no records, with the SOA's negative TTL; any other response code, or an error from the platform, is no answer. Dropping the lookup calls `android_res_cancel`.
+1. `platform::android::dns::query_https`. It is sent only where the network the lookup names is still the one the callback reports, on that network's handle, and otherwise is not sent, which is no answer. The response is read by `dns::message`; `NXDOMAIN` and `NOERROR` without records are no records, with the SOA's negative TTL; any other response code, or an error from the platform, is no answer. Dropping the lookup calls `android_res_cancel`.
 
 ### Rationale
 
@@ -175,7 +175,7 @@ Option 2 is the same resolver behind a JNI call, a Java callback and an `Executo
 
 ### Validated by
 
-`platform::android::dns::tests` on the emulator: a query on the default network that completes, a value that is not a network handle refused, a name that cannot be sent, and a query dropped mid-flight; the response reading is `dns::message::tests` on every platform. Records from a public origin on a device, over Private DNS, are not exercised by CI.
+`platform::android::dns::tests` on the emulator: a query sent only to the network it names (`a_query_goes_only_to_the_network_it_names`), a query on the default network that completes, a value that is not a network handle refused, a name that cannot be sent, and a query dropped mid-flight; the response reading is `dns::message::tests` on every platform. Records from a public origin on a device, over Private DNS, are not exercised by CI.
 
 ## Windows
 

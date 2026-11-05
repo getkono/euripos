@@ -10,11 +10,18 @@ use hickory_resolver::proto::rr::{RData, RecordType};
 use hickory_resolver::proto::serialize::binary::BinEncodable;
 use hickory_resolver::system_conf::read_system_conf;
 
+use crate::NetworkId;
 use crate::dns::{Answer, Record};
 
-/// Query `name`'s HTTPS records. `None` where the system configuration
-/// cannot be read or the query fails.
-pub(crate) async fn query_https(name: &str) -> Option<Answer> {
+/// Query `name`'s HTTPS records through the configuration the system holds
+/// now. `None` where the system configuration cannot be read or the query
+/// fails.
+///
+/// `network` is not read: Linux has one resolver configuration, for the
+/// network it is on, so a query cannot be put to another network. During a
+/// network change the answer may come from the new network; the cache's
+/// bound on that is in docs/design/https-svcb.md, "Cache".
+pub(crate) async fn query_https(_network: Option<NetworkId>, name: &str) -> Option<Answer> {
     let (config, options) = read_system_conf().ok()?;
     query_with(config, options, name).await
 }
@@ -169,7 +176,7 @@ mod tests {
         // it answers for a reserved name, the query completes.
         let answer = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            super::query_https("euripos.invalid"),
+            super::query_https(None, "euripos.invalid"),
         )
         .await;
         assert!(

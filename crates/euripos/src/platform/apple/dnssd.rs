@@ -20,6 +20,7 @@ use std::ptr;
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 
+use crate::NetworkId;
 use crate::dns::message::{CLASS_IN, TYPE_HTTPS};
 use crate::dns::{Answer, Record};
 
@@ -44,7 +45,12 @@ const NO_SUCH_RECORD: i32 = -65_554;
 
 /// Query `name`'s HTTPS records on any interface. `None` where the query
 /// cannot be started or fails.
-pub(crate) async fn query_https(name: &str) -> Option<Answer> {
+///
+/// `network` is not read: mDNSResponder answers with the configuration of
+/// the path it is on, and a query cannot be put to another path. During a
+/// network change the answer may come from the new path; the cache's bound
+/// on that is in docs/design/https-svcb.md, "Cache".
+pub(crate) async fn query_https(_network: Option<NetworkId>, name: &str) -> Option<Answer> {
     let name = CString::new(name).ok()?;
     let replies = Box::new(RefCell::new(Replies::default()));
     // `replies` is declared before `query`, so it is dropped after the query
@@ -349,19 +355,22 @@ mod tests {
     // internet dependency.
     #[tokio::test]
     async fn a_query_completes() {
-        let answer =
-            tokio::time::timeout(Duration::from_secs(30), query_https("euripos.invalid")).await;
+        let answer = tokio::time::timeout(
+            Duration::from_secs(30),
+            query_https(None, "euripos.invalid"),
+        )
+        .await;
         assert!(answer.is_ok(), "mDNSResponder bounds its own query");
     }
 
     #[tokio::test]
     async fn a_name_with_a_nul_is_not_queried() {
-        assert_eq!(query_https("exa\0mple.com").await, None);
+        assert_eq!(query_https(None, "exa\0mple.com").await, None);
     }
 
     #[tokio::test]
     async fn a_dropped_query_is_deallocated() {
-        let query = query_https("euripos.invalid");
+        let query = query_https(None, "euripos.invalid");
         // Polled once so the query is started and registered, then dropped.
         let _ = tokio::time::timeout(Duration::ZERO, query).await;
     }

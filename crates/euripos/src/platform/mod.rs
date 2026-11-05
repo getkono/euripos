@@ -22,8 +22,10 @@ pub(crate) use linux::{network_source, query_https};
 pub(crate) use windows::network_source;
 
 /// Query `name`'s HTTPS records through the platform's resolver
-/// ([`crate::dns`]). Where the platform has no way to query them, there is
-/// no answer, and the origin's records are `Unknown`.
+/// ([`crate::dns`]) on `network`, where the platform can put a query to a
+/// given network, and on the network it is on otherwise. Where the platform
+/// has no way to query them, there is no answer, and the origin's records are
+/// `Unknown`.
 // TODO(#57): `DnsQueryEx` on Windows (docs/adr/0002-windows-dns.md).
 #[cfg(not(any(
     target_os = "linux",
@@ -35,7 +37,10 @@ pub(crate) use windows::network_source;
     clippy::unused_async,
     reason = "the signature is every platform's; the others query asynchronously"
 )]
-pub(crate) async fn query_https(_name: &str) -> Option<crate::dns::Answer> {
+pub(crate) async fn query_https(
+    _network: Option<crate::NetworkId>,
+    _name: &str,
+) -> Option<crate::dns::Answer> {
     None
 }
 

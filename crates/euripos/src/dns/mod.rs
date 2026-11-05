@@ -119,8 +119,8 @@ impl Resolver {
         host: &str,
         port: u16,
     ) -> HttpsRecords {
-        self.lookup_with(network, host, port, &async |name: &str| {
-            crate::platform::query_https(name).await
+        self.lookup_with(network, host, port, &async move |name: &str| {
+            crate::platform::query_https(network, name).await
         })
         .await
     }
