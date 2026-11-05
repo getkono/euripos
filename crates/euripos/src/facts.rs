@@ -22,6 +22,11 @@ pub struct NetworkFacts {
     pub(crate) ipv4: IpAvailability,
     pub(crate) ipv6: IpAvailability,
     pub(crate) proxy: ProxyConfig,
+    /// Whether the platform blocks this process's traffic on the network
+    /// now, as Android does in Doze, App Standby and Data Saver. Internal:
+    /// the monitor reports the end of a block as a resume, after which
+    /// pooled connections are suspect. Only Android reports one.
+    pub(crate) blocked: bool,
 }
 
 impl NetworkFacts {
@@ -34,6 +39,7 @@ impl NetworkFacts {
         ipv4: IpAvailability::Unknown,
         ipv6: IpAvailability::Unknown,
         proxy: ProxyConfig::Unknown,
+        blocked: false,
     };
 
     /// The network traffic leaves through now.

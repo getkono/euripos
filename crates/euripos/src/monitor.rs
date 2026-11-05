@@ -61,6 +61,10 @@ pub(crate) enum NetworkEvent {
     Changed(NetworkId),
     /// The network is the same, and another fact about it changed.
     FactsChanged,
+    /// The network is the same, and the platform stopped blocking this
+    /// process's traffic on it (Android's Doze or App Standby ended):
+    /// connections that sat idle through the block may be dead.
+    Resumed,
     /// No network is left to send traffic through.
     Lost,
 }
@@ -72,6 +76,7 @@ impl NetworkEvent {
         match (from.network, to.network) {
             (_, Some(network)) if from.network != to.network => Some(Self::Changed(network)),
             (Some(_), None) => Some(Self::Lost),
+            _ if from.blocked && !to.blocked => Some(Self::Resumed),
             _ if from != to => Some(Self::FactsChanged),
             _ => None,
         }
@@ -512,6 +517,49 @@ mod tests {
             Some(NetworkEvent::FactsChanged)
         );
         assert_eq!(NetworkEvent::between(&on(1), &on(1)), None);
+    }
+
+    #[test]
+    fn the_end_of_a_block_on_the_same_network_is_a_resume() {
+        let blocked = NetworkFacts {
+            blocked: true,
+            ..on(1)
+        };
+        assert_eq!(
+            NetworkEvent::between(&on(1), &blocked),
+            Some(NetworkEvent::FactsChanged)
+        );
+        assert_eq!(
+            NetworkEvent::between(&blocked, &on(1)),
+            Some(NetworkEvent::Resumed)
+        );
+        // A resume onto another network is that network's change.
+        assert_eq!(
+            NetworkEvent::between(&blocked, &on(2)),
+            Some(NetworkEvent::Changed(NetworkId::from_key(&2_u32)))
+        );
+    }
+
+    // Doze ends: the block is published at once, as any fact on the same
+    // network is, and so is its end.
+    #[tokio::test(start_paused = true)]
+    async fn a_block_and_its_end_are_published_without_confirmation() {
+        local(async {
+            let (fake, signal, published) = start(on(1));
+            sleep(Duration::from_millis(1)).await;
+            let blocked = NetworkFacts {
+                blocked: true,
+                ..on(1)
+            };
+            set(&fake, blocked.clone());
+            signal.send(()).unwrap();
+            sleep(CONFIRM / 2).await;
+            set(&fake, on(1));
+            signal.send(()).unwrap();
+            sleep(CONFIRM / 2).await;
+            assert_eq!(*published.borrow(), [on(1), blocked, on(1)]);
+        })
+        .await;
     }
 
     #[tokio::test]

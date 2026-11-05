@@ -88,6 +88,7 @@ impl Source for WindowsSource {
             ipv4: availability(v4.as_ref()),
             ipv6: availability(v6.as_ref()),
             proxy: proxy::config(),
+            ..NetworkFacts::UNKNOWN
         }
     }
 
