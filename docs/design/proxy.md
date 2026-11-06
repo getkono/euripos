@@ -39,7 +39,7 @@ A proxy reached over TLS (`https://` proxy URI) and SOCKS are not supported; nei
 
 ### Validated by
 
-`crates/euripos/tests/proxy/`: through a loopback proxy the test starts, an `http` request arrives in absolute form with `Host`, and an `https` request (in `client.rs`'s TLS tests, which trust a test certificate) arrives at the origin through a `CONNECT` tunnel the proxy saw, over HTTP/2 when the origin offers it; `no_proxy()` bypasses the proxy; a proxy that refuses the tunnel fails as `ErrorKind::Connect`. Unit tests in `src/proxy.rs` cover the environment's variable order, `no_proxy` matching and the httpoxy rule; `src/pool.rs` covers the pool key and the absolute form.
+`crates/euripos/tests/proxy/`: through a loopback proxy the test starts, an `http` request arrives in absolute form with `Host`, and an `https` request (in `client.rs`'s TLS tests, which trust a test certificate) arrives at the origin through a `CONNECT` tunnel the proxy saw, over HTTP/2 when the origin offers it; `no_proxy()` bypasses the proxy; a proxy that refuses the tunnel fails as `ErrorKind::Connect`; on Linux, a redirect from a host the environment's proxy serves to one `no_proxy` names reaches its target directly, so each hop chooses its own route. Unit tests in `src/proxy.rs` cover the environment's variable order, `no_proxy` matching and the httpoxy rule; `src/pool.rs` covers the pool key and the absolute form.
 
 ## Proxy authentication
 
