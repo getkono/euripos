@@ -310,6 +310,8 @@ fn percent_decode(text: &str) -> Vec<u8> {
     while i < bytes.len() {
         if bytes[i] == b'%'
             && let Some(hex) = bytes.get(i + 1..i + 3)
+            // `from_str_radix` alone would accept a leading `+`.
+            && hex.iter().all(u8::is_ascii_hexdigit)
             && let Ok(hex) = std::str::from_utf8(hex)
             && let Ok(byte) = u8::from_str_radix(hex, 16)
         {
@@ -442,6 +444,12 @@ mod tests {
         assert_eq!(percent_decode("a%40b%3Ac"), b"a@b:c");
         assert_eq!(percent_decode("100%"), b"100%");
         assert_eq!(percent_decode("%zz%4"), b"%zz%4");
+    }
+
+    #[test]
+    fn a_sign_is_not_a_hex_digit_in_an_escape() {
+        assert_eq!(percent_decode("%+f"), b"%+f");
+        assert_eq!(percent_decode("%-f"), b"%-f");
     }
 
     #[test]
