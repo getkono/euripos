@@ -4,10 +4,12 @@
 //! exchange through a tunnel is tested in `src/client.rs`. Here the tunnel
 //! reaches an origin that records the TLS handshake starting.
 
-use euripos::http::Request;
-use euripos::{ErrorKind, Proxy};
+use std::time::{Duration, Instant};
 
-use crate::server::{client, proxy};
+use euripos::http::Request;
+use euripos::{Client, ErrorKind, Proxy, TimeoutKind};
+
+use crate::server::{BOUND, client, proxy, silent_proxy};
 
 // The client's own provider, so nothing is installed for the process: without
 // `crypto-ring` the request would fail before its handshake starts.
@@ -90,6 +92,52 @@ async fn a_407_to_the_connect_fails_as_proxy_auth_required() {
         .expect_err("the proxy asks for credentials");
     assert_eq!(error.kind(), ErrorKind::ProxyAuthRequired);
     assert_eq!(proxy.seen().len(), 1);
+}
+
+/// The connect timeout covers the `CONNECT` exchange (docs/design/proxy.md):
+/// a proxy that accepts the TCP connection and never answers fails the
+/// request with a connect timeout, not the total timeout.
+#[tokio::test]
+async fn a_proxy_that_never_answers_the_connect_times_out_as_connect() {
+    const SHORT: Duration = Duration::from_millis(300);
+    let (address, received) = silent_proxy().await;
+    let client = Client::builder()
+        .connect_timeout(SHORT)
+        .tls_timeout(BOUND)
+        .total_timeout(BOUND)
+        .read_stall_timeout(BOUND)
+        .proxy(Proxy::new(&format!("http://{address}")).expect("proxy"))
+        .build();
+    let start = Instant::now();
+    let error = tokio::time::timeout(
+        BOUND,
+        client.send(
+            Request::get("https://origin.invalid/")
+                .body(())
+                .expect("request"),
+        ),
+    )
+    .await
+    .expect("the connect timeout fired within the test's bound")
+    .expect_err("the proxy never answers the CONNECT");
+    let elapsed = start.elapsed();
+    assert_eq!(
+        error.kind(),
+        ErrorKind::Timeout(TimeoutKind::Connect),
+        "{error:?}"
+    );
+    assert!(
+        elapsed >= SHORT,
+        "fired after {elapsed:?}, before its timeout of {SHORT:?}"
+    );
+    // The stall is in the CONNECT exchange: the TCP connection was made and
+    // the request sent.
+    let received = received.lock().expect("the record").clone();
+    assert!(
+        received.starts_with(b"CONNECT origin.invalid:443 "),
+        "{:?}",
+        String::from_utf8_lossy(&received)
+    );
 }
 
 #[tokio::test]

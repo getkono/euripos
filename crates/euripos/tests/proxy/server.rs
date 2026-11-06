@@ -10,6 +10,7 @@ use euripos::http::{HeaderMap, Method, Request, Response, StatusCode};
 use euripos::{Body, Client, Proxy};
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
 /// The most any request in these tests may take.
@@ -101,6 +102,31 @@ pub(crate) async fn proxy(answer: fn(&Seen) -> u16) -> ProxyServer {
         }
     });
     ProxyServer { address, seen }
+}
+
+/// Starts a proxy that accepts every connection, keeps the bytes it is sent,
+/// and never answers: a `CONNECT` to it stalls until the client gives up.
+/// Returns its address and everything received so far across connections.
+pub(crate) async fn silent_proxy() -> (SocketAddr, Arc<Mutex<Vec<u8>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let record = received.clone();
+    tokio::spawn(async move {
+        while let Ok((mut tcp, _)) = listener.accept().await {
+            let record = record.clone();
+            tokio::spawn(async move {
+                let mut buf = [0; 1024];
+                while let Ok(read @ 1..) = tcp.read(&mut buf).await {
+                    record
+                        .lock()
+                        .expect("the record")
+                        .extend_from_slice(&buf[..read]);
+                }
+            });
+        }
+    });
+    (address, received)
 }
 
 /// Starts an origin that answers every request with `direct`.
