@@ -176,8 +176,17 @@ impl Setting {
 /// rather than sending the request around the proxy configured; an empty
 /// list is the origin directly.
 #[cfg_attr(
-    not(any(test, target_os = "android", target_os = "windows")),
-    expect(dead_code, reason = "the other platforms' sources are wired next")
+    not(any(
+        test,
+        target_os = "windows",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios"
+    )),
+    expect(
+        dead_code,
+        reason = "Linux reads one proxy from the environment; other platforms have no list"
+    )
 )]
 pub(crate) fn platform_routes<'a>(
     entries: impl IntoIterator<Item = Option<&'a str>>,
@@ -234,10 +243,15 @@ pub(crate) fn wildcard(pattern: &str, host: &str) -> bool {
     not(any(
         test,
         target_os = "linux",
+        target_os = "windows",
         target_os = "android",
-        target_os = "windows"
+        target_os = "macos",
+        target_os = "ios"
     )),
-    expect(dead_code, reason = "the other platforms' sources are wired next")
+    expect(
+        dead_code,
+        reason = "a platform with no proxy configuration reads no value"
+    )
 )]
 pub(crate) fn proxy_value(value: &str) -> Result<Hop, Error> {
     let value = value.trim();

@@ -1,14 +1,18 @@
-//! The parts of Network.framework's and libdispatch's C API the Apple
-//! platform calls, declared by hand (docs/adr/0003-apple-network-framework.md,
-//! "Bindings").
+//! The parts of Network.framework's, libdispatch's, Core Foundation's and
+//! `CFNetwork`'s C API the Apple platform calls, declared by hand
+//! (docs/adr/0003-apple-network-framework.md, "Bindings").
 //!
 //! Every Network.framework object is an opaque reference-counted pointer,
 //! released with [`nw_release`]; a dispatch object is released with
-//! [`dispatch_release`]. Callbacks are blocks, whose ABI `block2` implements.
-//! An object passed to a callback is borrowed for the call.
+//! [`dispatch_release`]; a Core Foundation object with [`CFRelease`].
+//! Network.framework's callbacks are blocks, whose ABI `block2` implements;
+//! `CFNetwork`'s are C functions. An object passed to a callback is borrowed
+//! for the call.
 
 #![allow(
     non_camel_case_types,
+    non_upper_case_globals,
+    non_snake_case,
     reason = "the C API's own names, so each declaration can be checked against the SDK headers"
 )]
 
@@ -138,6 +142,147 @@ unsafe extern "C" {
 
     pub(crate) fn nw_interface_get_type(interface: nw_interface_t) -> u32;
     pub(crate) fn nw_interface_get_index(interface: nw_interface_t) -> u32;
+}
+
+/// `CFTypeRef`, and every Core Foundation object: released with
+/// [`CFRelease`].
+pub(crate) type CFTypeRef = *const c_void;
+pub(crate) type CFStringRef = CFTypeRef;
+pub(crate) type CFURLRef = CFTypeRef;
+pub(crate) type CFArrayRef = CFTypeRef;
+pub(crate) type CFDictionaryRef = CFTypeRef;
+pub(crate) type CFNumberRef = CFTypeRef;
+pub(crate) type CFErrorRef = CFTypeRef;
+pub(crate) type CFRunLoopRef = CFTypeRef;
+pub(crate) type CFRunLoopSourceRef = CFTypeRef;
+pub(crate) type CFIndex = isize;
+pub(crate) type CFTypeID = usize;
+/// Core Foundation's `Boolean`.
+pub(crate) type Boolean = u8;
+
+/// `kCFStringEncodingUTF8`.
+pub(crate) const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+/// `kCFNumberSInt64Type`.
+pub(crate) const K_CF_NUMBER_SINT64_TYPE: CFIndex = 4;
+/// `kCFRunLoopRunFinished`, a result of [`CFRunLoopRunInMode`].
+pub(crate) const K_CF_RUN_LOOP_RUN_FINISHED: i32 = 1;
+
+/// `CFStreamClientContext`.
+#[repr(C)]
+pub(crate) struct CFStreamClientContext {
+    pub(crate) version: CFIndex,
+    pub(crate) info: *mut c_void,
+    pub(crate) retain: Option<unsafe extern "C" fn(*mut c_void) -> *mut c_void>,
+    pub(crate) release: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub(crate) copy_description: Option<unsafe extern "C" fn(*mut c_void) -> CFStringRef>,
+}
+
+/// `CFProxyAutoConfigurationResultCallback`: the proxy list, or the error,
+/// borrowed for the call.
+pub(crate) type CFProxyAutoConfigurationResultCallback =
+    unsafe extern "C" fn(client: *mut c_void, proxy_list: CFArrayRef, error: CFErrorRef);
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    pub(crate) fn CFRelease(object: CFTypeRef);
+    pub(crate) fn CFRetain(object: CFTypeRef) -> CFTypeRef;
+    pub(crate) fn CFEqual(a: CFTypeRef, b: CFTypeRef) -> Boolean;
+    pub(crate) fn CFGetTypeID(object: CFTypeRef) -> CFTypeID;
+
+    pub(crate) fn CFStringGetTypeID() -> CFTypeID;
+    #[cfg_attr(not(test), expect(dead_code, reason = "the tests make a PAC script"))]
+    pub(crate) fn CFStringCreateWithBytes(
+        allocator: CFTypeRef,
+        bytes: *const u8,
+        length: CFIndex,
+        encoding: u32,
+        is_external_representation: Boolean,
+    ) -> CFStringRef;
+    pub(crate) fn CFStringGetLength(string: CFStringRef) -> CFIndex;
+    pub(crate) fn CFStringGetMaximumSizeForEncoding(length: CFIndex, encoding: u32) -> CFIndex;
+    pub(crate) fn CFStringGetCString(
+        string: CFStringRef,
+        buffer: *mut c_char,
+        size: CFIndex,
+        encoding: u32,
+    ) -> Boolean;
+
+    pub(crate) fn CFURLGetTypeID() -> CFTypeID;
+    pub(crate) fn CFURLCreateWithBytes(
+        allocator: CFTypeRef,
+        bytes: *const u8,
+        length: CFIndex,
+        encoding: u32,
+        base: CFURLRef,
+    ) -> CFURLRef;
+
+    pub(crate) fn CFNumberGetTypeID() -> CFTypeID;
+    pub(crate) fn CFNumberGetValue(
+        number: CFNumberRef,
+        number_type: CFIndex,
+        value: *mut c_void,
+    ) -> Boolean;
+
+    pub(crate) fn CFArrayGetTypeID() -> CFTypeID;
+    pub(crate) fn CFArrayGetCount(array: CFArrayRef) -> CFIndex;
+    pub(crate) fn CFArrayGetValueAtIndex(array: CFArrayRef, index: CFIndex) -> CFTypeRef;
+
+    pub(crate) fn CFDictionaryGetTypeID() -> CFTypeID;
+    pub(crate) fn CFDictionaryGetValue(dictionary: CFDictionaryRef, key: CFTypeRef) -> CFTypeRef;
+
+    pub(crate) fn CFRunLoopGetCurrent() -> CFRunLoopRef;
+    pub(crate) fn CFRunLoopAddSource(
+        run_loop: CFRunLoopRef,
+        source: CFRunLoopSourceRef,
+        mode: CFStringRef,
+    );
+    pub(crate) fn CFRunLoopRemoveSource(
+        run_loop: CFRunLoopRef,
+        source: CFRunLoopSourceRef,
+        mode: CFStringRef,
+    );
+    pub(crate) fn CFRunLoopRunInMode(
+        mode: CFStringRef,
+        seconds: f64,
+        return_after_source_handled: Boolean,
+    ) -> i32;
+    pub(crate) fn CFRunLoopStop(run_loop: CFRunLoopRef);
+    pub(crate) fn CFRunLoopSourceInvalidate(source: CFRunLoopSourceRef);
+
+    pub(crate) static kCFRunLoopDefaultMode: CFStringRef;
+}
+
+#[link(name = "CFNetwork", kind = "framework")]
+unsafe extern "C" {
+    pub(crate) fn CFNetworkCopySystemProxySettings() -> CFDictionaryRef;
+    pub(crate) fn CFNetworkCopyProxiesForURL(
+        url: CFURLRef,
+        proxy_settings: CFDictionaryRef,
+    ) -> CFArrayRef;
+    pub(crate) fn CFNetworkExecuteProxyAutoConfigurationURL(
+        proxy_auto_config_url: CFURLRef,
+        target_url: CFURLRef,
+        callback: CFProxyAutoConfigurationResultCallback,
+        client_context: *mut CFStreamClientContext,
+    ) -> CFRunLoopSourceRef;
+    pub(crate) fn CFNetworkExecuteProxyAutoConfigurationScript(
+        proxy_auto_configuration_script: CFStringRef,
+        target_url: CFURLRef,
+        callback: CFProxyAutoConfigurationResultCallback,
+        client_context: *mut CFStreamClientContext,
+    ) -> CFRunLoopSourceRef;
+
+    pub(crate) static kCFProxyTypeKey: CFStringRef;
+    pub(crate) static kCFProxyHostNameKey: CFStringRef;
+    pub(crate) static kCFProxyPortNumberKey: CFStringRef;
+    pub(crate) static kCFProxyAutoConfigurationURLKey: CFStringRef;
+    pub(crate) static kCFProxyAutoConfigurationJavaScriptKey: CFStringRef;
+    pub(crate) static kCFProxyTypeNone: CFStringRef;
+    pub(crate) static kCFProxyTypeHTTP: CFStringRef;
+    pub(crate) static kCFProxyTypeHTTPS: CFStringRef;
+    pub(crate) static kCFProxyTypeSOCKS: CFStringRef;
+    pub(crate) static kCFProxyTypeAutoConfigurationURL: CFStringRef;
+    pub(crate) static kCFProxyTypeAutoConfigurationJavaScript: CFStringRef;
 }
 
 // libdispatch is part of libSystem, which every binary links.

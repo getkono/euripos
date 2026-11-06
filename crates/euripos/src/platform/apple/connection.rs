@@ -127,8 +127,9 @@ impl Stream {
                 "Network.framework rejected the host or the parameters",
             ));
         };
-        // Proxies are the client's own concern (#49): a system proxy must not
-        // carry the connection without the client knowing.
+        // Proxies are the client's own concern (#49): it reads the system
+        // proxy itself and connects to the proxy it chose (`proxy::routes`),
+        // so Network.framework must not proxy the connection again.
         // SAFETY: the parameters are live.
         unsafe { ffi::nw_parameters_set_prefer_no_proxy(parameters.0, true) };
         // SAFETY: the endpoint and parameters are live; the connection
