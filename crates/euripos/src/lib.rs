@@ -9,8 +9,9 @@
 //! ([`ClientBuilder::max_redirects`]), a cookie store
 //! ([`ClientBuilder::cookie_store`]), streaming bodies ([`Body::wrap`],
 //! [`Body::chunk`]), JSON ([`Body::from_json`], [`Body::json`]),
-//! `multipart/form-data` ([`Form`]), and response decompression behind the
-//! `gzip`, `brotli` and `zstd` features. Requests and responses are the
+//! `multipart/form-data` ([`Form`]), HTTP proxies with Basic credentials
+//! ([`Proxy`]), and response decompression behind the `gzip`, `brotli` and
+//! `zstd` features. Requests and responses are the
 //! [`http`] crate's types, re-exported so the versions always match:
 //!
 //! ```no_run
@@ -52,6 +53,7 @@ mod monitor;
 mod multipart;
 mod platform;
 mod pool;
+mod proxy;
 mod redirect;
 mod timeout;
 mod tls;
@@ -63,6 +65,7 @@ pub use facts::{
     Constraint, InterfaceKind, IpAvailability, Metering, NetworkFacts, NetworkId, ProxyConfig,
 };
 pub use multipart::{Form, Part};
+pub use proxy::Proxy;
 
 /// The [`http`](https://docs.rs/http/1) crate, whose `Request` and `Response`
 /// this client sends and returns.

@@ -30,6 +30,7 @@ pub euripos::ErrorKind::Connect
 pub euripos::ErrorKind::Decode
 pub euripos::ErrorKind::NetworkChanged
 pub euripos::ErrorKind::Protocol
+pub euripos::ErrorKind::ProxyAuthRequired
 pub euripos::ErrorKind::Redirect
 pub euripos::ErrorKind::Timeout(euripos::TimeoutKind)
 pub euripos::ErrorKind::Tls
@@ -237,6 +238,8 @@ pub fn euripos::ClientBuilder::connect_timeout(self, core::time::Duration) -> Se
 pub fn euripos::ClientBuilder::cookie_store(self, bool) -> Self
 pub fn euripos::ClientBuilder::max_redirects(self, u32) -> Self
 pub fn euripos::ClientBuilder::new() -> Self
+pub fn euripos::ClientBuilder::no_proxy(self) -> Self
+pub fn euripos::ClientBuilder::proxy(self, euripos::Proxy) -> Self
 pub fn euripos::ClientBuilder::read_stall_timeout(self, core::time::Duration) -> Self
 pub fn euripos::ClientBuilder::tls_timeout(self, core::time::Duration) -> Self
 pub fn euripos::ClientBuilder::total_timeout(self, core::time::Duration) -> Self
@@ -244,7 +247,7 @@ impl core::default::Default for euripos::ClientBuilder
 pub fn euripos::ClientBuilder::default() -> Self
 impl core::fmt::Debug for euripos::ClientBuilder
 pub fn euripos::ClientBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for euripos::ClientBuilder
+impl !core::marker::Freeze for euripos::ClientBuilder
 impl core::marker::Send for euripos::ClientBuilder
 impl core::marker::Sync for euripos::ClientBuilder
 impl core::marker::Unpin for euripos::ClientBuilder
@@ -345,3 +348,18 @@ impl core::marker::Unpin for euripos::Part
 impl core::marker::UnsafeUnpin for euripos::Part
 impl !core::panic::unwind_safe::RefUnwindSafe for euripos::Part
 impl !core::panic::unwind_safe::UnwindSafe for euripos::Part
+pub struct euripos::Proxy
+impl euripos::Proxy
+pub fn euripos::Proxy::basic_auth(self, &str, &str) -> Self
+pub fn euripos::Proxy::new(&str) -> core::result::Result<Self, euripos::Error>
+impl core::clone::Clone for euripos::Proxy
+pub fn euripos::Proxy::clone(&self) -> Self
+impl core::fmt::Debug for euripos::Proxy
+pub fn euripos::Proxy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl !core::marker::Freeze for euripos::Proxy
+impl core::marker::Send for euripos::Proxy
+impl core::marker::Sync for euripos::Proxy
+impl core::marker::Unpin for euripos::Proxy
+impl core::marker::UnsafeUnpin for euripos::Proxy
+impl core::panic::unwind_safe::RefUnwindSafe for euripos::Proxy
+impl core::panic::unwind_safe::UnwindSafe for euripos::Proxy

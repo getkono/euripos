@@ -7,6 +7,10 @@
 //! becomes an HTTP/2 connection shared by every request through [`Shared`], or
 //! an HTTP/1.1 connection that serves one request at a time from a `cache`.
 //! See docs/baseline.md, "Connection pool".
+//!
+//! A request through a proxy (docs/design/proxy.md) is keyed by its origin
+//! and the proxy: an `http` one is sent to the proxy in absolute form, and an
+//! `https` one through a tunnel the connector opens with `CONNECT`.
 
 use std::error::Error as StdError;
 use std::fmt;
@@ -18,9 +22,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 
 use http::uri::{Authority, Scheme};
-use http::{HeaderValue, Request, Response, Uri, header};
+use http::{HeaderValue, Method, Request, Response, StatusCode, Uri, header};
 use hyper::body::Incoming;
 use hyper::client::conn::{http1, http2};
+use hyper::upgrade::Upgraded;
 use hyper_util::client::pool::{cache, map::Map, negotiate};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -29,6 +34,7 @@ use tokio_rustls::client::TlsStream;
 use tower_layer::layer_fn;
 use tower_service::Service;
 
+use crate::proxy::{Hop, Setting};
 use crate::timeout::{Timeouts, deadline, until};
 use crate::tls::{Trust, negotiated_h2};
 use crate::{Body, Error, ErrorKind, TimeoutKind, platform};
@@ -40,13 +46,16 @@ type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 /// given turns out to be closed before anything was sent on it.
 const STALE_RETRIES: usize = 3;
 
-/// An origin: the pool key, and what the connector connects to.
+/// An origin and the proxy it is reached through: the pool key, and what
+/// the connector connects to.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Dst {
     tls: bool,
     /// The host as a name or an IP address, without IPv6 brackets.
     host: String,
     port: u16,
+    /// The proxy, when the origin is reached through one.
+    proxy: Option<Hop>,
 }
 
 impl Dst {
@@ -73,7 +82,20 @@ impl Dst {
             tls,
             host: host.to_ascii_lowercase(),
             port: authority.port_u16().unwrap_or(if tls { 443 } else { 80 }),
+            proxy: None,
         })
+    }
+
+    /// The origin reached through the proxy `setting` picks for it.
+    pub(crate) fn route(self, setting: &Setting) -> Result<Self, Error> {
+        let proxy = setting.hop(self.tls, &self.host)?;
+        Ok(Self { proxy, ..self })
+    }
+
+    /// Whether requests to the origin are sent to a proxy whole, rather
+    /// than to the origin or through a tunnel.
+    fn forwarded(&self) -> bool {
+        self.proxy.is_some() && !self.tls
     }
 }
 
@@ -169,6 +191,15 @@ impl Pool {
                         lease.call(request),
                     )
                     .await?;
+                    // A proxy that forwards the request answers for itself
+                    // only when it refuses it; no origin sends a `407`
+                    // (RFC 9110 §15.5.8). The lease is dropped unreleased,
+                    // so the connection is closed.
+                    if dst.forwarded()
+                        && response.status() == StatusCode::PROXY_AUTHENTICATION_REQUIRED
+                    {
+                        return Err(Error::new(ErrorKind::ProxyAuthRequired));
+                    }
                     return Ok((response, lease));
                 }
             })
@@ -262,7 +293,9 @@ where
     }
 }
 
-/// Opens connections: TCP, then TLS for `https`, each under its timeout.
+/// Opens connections: TCP, a `CONNECT` tunnel for `https` through a proxy,
+/// then TLS for `https`. The connect timeout covers the TCP connection and
+/// the tunnel, and the TLS timeout the handshake.
 #[derive(Clone)]
 struct Connector {
     timeouts: Timeouts,
@@ -281,42 +314,135 @@ impl Service<Dst> for Connector {
     fn call(&mut self, dst: Dst) -> Self::Future {
         let Self { timeouts, trust } = self.clone();
         Box::pin(async move {
-            let tcp = until(
-                deadline(timeouts.connect),
-                TimeoutKind::Connect,
-                platform::connect(&dst.host, dst.port),
-            )
+            let (host, port) = match &dst.proxy {
+                Some(proxy) => (proxy.host.as_str(), proxy.port),
+                None => (dst.host.as_str(), dst.port),
+            };
+            let tcp = until(deadline(timeouts.connect), TimeoutKind::Connect, async {
+                let tcp = platform::connect(host, port).await?;
+                match &dst.proxy {
+                    Some(proxy) if dst.tls => tunnel(tcp, &dst, proxy).await.map(Raw::Tunnel),
+                    _ => Ok(Raw::Tcp(tcp)),
+                }
+            })
             .await?;
-            if !dst.tls {
-                return Ok(Connection {
-                    io: Io::Tcp(tcp),
-                    h2: false,
-                });
-            }
-            let tls = until(
-                deadline(timeouts.tls),
-                TimeoutKind::Tls,
-                trust.handshake(&dst.host, tcp),
-            )
-            .await?;
+            let (io, h2) = match tcp {
+                Raw::Tcp(tcp) if !dst.tls => {
+                    let form = match &dst.proxy {
+                        Some(proxy) => Form::Absolute(proxy.auth.clone()),
+                        None => Form::Origin,
+                    };
+                    return Ok(Connection {
+                        io: Io::Tcp(tcp),
+                        form,
+                        h2: false,
+                    });
+                }
+                Raw::Tcp(tcp) => {
+                    let tls = until(
+                        deadline(timeouts.tls),
+                        TimeoutKind::Tls,
+                        trust.handshake(&dst.host, tcp),
+                    )
+                    .await?;
+                    let h2 = negotiated_h2(&tls);
+                    (Io::Tls(Box::new(tls)), h2)
+                }
+                Raw::Tunnel(tunnel) => {
+                    let tls = until(
+                        deadline(timeouts.tls),
+                        TimeoutKind::Tls,
+                        trust.handshake(&dst.host, tunnel),
+                    )
+                    .await?;
+                    let h2 = negotiated_h2(&tls);
+                    (Io::Tunnel(Box::new(tls)), h2)
+                }
+            };
             Ok(Connection {
-                h2: negotiated_h2(&tls),
-                io: Io::Tls(Box::new(tls)),
+                io,
+                form: Form::Origin,
+                h2,
             })
         })
     }
 }
 
-/// An open connection, and whether ALPN chose HTTP/2 on it.
+/// Opens a tunnel to `dst` through `proxy` over `tcp`, a connection to the
+/// proxy: a `CONNECT` for the origin's authority (RFC 9110 §9.3.6) with the
+/// proxy's credentials, whose `2xx` answer turns the connection into a byte
+/// stream to the origin.
+///
+/// A `407` fails as [`ErrorKind::ProxyAuthRequired`]; any other refusal, or
+/// a broken exchange, as [`ErrorKind::Connect`].
+async fn tunnel(tcp: platform::Stream, dst: &Dst, proxy: &Hop) -> Result<Tunnel, Error> {
+    fn connect(error: impl Into<BoxError>) -> Error {
+        Error::with_source(ErrorKind::Connect, error)
+    }
+    let authority = Hop::authority(&dst.host, dst.port);
+    let mut request = Request::new(Body::empty());
+    *request.method_mut() = Method::CONNECT;
+    *request.uri_mut() = authority.parse().map_err(connect)?;
+    let headers = request.headers_mut();
+    headers.insert(
+        header::HOST,
+        HeaderValue::from_str(&authority).map_err(connect)?,
+    );
+    if let Some(auth) = &proxy.auth {
+        headers.insert(header::PROXY_AUTHORIZATION, auth.clone());
+    }
+    let (mut sender, driver) = http1::handshake(TokioIo::new(tcp)).await.map_err(connect)?;
+    tokio::spawn(async move {
+        // The upgrade hands the connection back; an error reaches the
+        // `CONNECT` it failed.
+        let _ = driver.with_upgrades().await;
+    });
+    let response = sender.send_request(request).await.map_err(connect)?;
+    match response.status() {
+        status if status.is_success() => hyper::upgrade::on(response)
+            .await
+            .map(TokioIo::new)
+            .map_err(connect),
+        StatusCode::PROXY_AUTHENTICATION_REQUIRED => Err(Error::new(ErrorKind::ProxyAuthRequired)),
+        status => Err(connect(format!(
+            "the proxy refused the tunnel with {status}"
+        ))),
+    }
+}
+
+/// A tunnel through a proxy to an origin.
+type Tunnel = TokioIo<Upgraded>;
+
+/// A connection before TLS: to the origin or to a proxy, or a tunnel
+/// through a proxy.
+enum Raw {
+    Tcp(platform::Stream),
+    Tunnel(Tunnel),
+}
+
+/// An open connection, the form HTTP/1.1 requests take on it, and whether
+/// ALPN chose HTTP/2 on it.
 struct Connection {
     io: Io,
+    form: Form,
     h2: bool,
+}
+
+/// The form of an HTTP/1.1 request's target (RFC 9112 §3.2).
+#[derive(Clone)]
+enum Form {
+    /// The path and query, to the origin or through a tunnel.
+    Origin,
+    /// The absolute URI, to a proxy, with the `Proxy-Authorization` each
+    /// request carries.
+    Absolute(Option<HeaderValue>),
 }
 
 /// The byte stream under a connection.
 enum Io {
     Tcp(platform::Stream),
     Tls(Box<TlsStream<platform::Stream>>),
+    Tunnel(Box<TlsStream<Tunnel>>),
 }
 
 impl AsyncRead for Io {
@@ -328,6 +454,7 @@ impl AsyncRead for Io {
         match self.get_mut() {
             Self::Tcp(io) => Pin::new(io).poll_read(cx, buf),
             Self::Tls(io) => Pin::new(io).poll_read(cx, buf),
+            Self::Tunnel(io) => Pin::new(io).poll_read(cx, buf),
         }
     }
 }
@@ -341,6 +468,7 @@ impl AsyncWrite for Io {
         match self.get_mut() {
             Self::Tcp(io) => Pin::new(io).poll_write(cx, buf),
             Self::Tls(io) => Pin::new(io).poll_write(cx, buf),
+            Self::Tunnel(io) => Pin::new(io).poll_write(cx, buf),
         }
     }
 
@@ -352,6 +480,7 @@ impl AsyncWrite for Io {
         match self.get_mut() {
             Self::Tcp(io) => Pin::new(io).poll_write_vectored(cx, bufs),
             Self::Tls(io) => Pin::new(io).poll_write_vectored(cx, bufs),
+            Self::Tunnel(io) => Pin::new(io).poll_write_vectored(cx, bufs),
         }
     }
 
@@ -359,6 +488,7 @@ impl AsyncWrite for Io {
         match self {
             Self::Tcp(io) => io.is_write_vectored(),
             Self::Tls(io) => io.is_write_vectored(),
+            Self::Tunnel(io) => io.is_write_vectored(),
         }
     }
 
@@ -366,6 +496,7 @@ impl AsyncWrite for Io {
         match self.get_mut() {
             Self::Tcp(io) => Pin::new(io).poll_flush(cx),
             Self::Tls(io) => Pin::new(io).poll_flush(cx),
+            Self::Tunnel(io) => Pin::new(io).poll_flush(cx),
         }
     }
 
@@ -373,6 +504,7 @@ impl AsyncWrite for Io {
         match self.get_mut() {
             Self::Tcp(io) => Pin::new(io).poll_shutdown(cx),
             Self::Tls(io) => Pin::new(io).poll_shutdown(cx),
+            Self::Tunnel(io) => Pin::new(io).poll_shutdown(cx),
         }
     }
 }
@@ -407,6 +539,7 @@ where
             });
             Ok(Http1Sender {
                 sender,
+                form: connection.form,
                 abandoned: Arc::default(),
             })
         })
@@ -526,6 +659,7 @@ where
 /// Sends requests over one HTTP/1.1 connection, one at a time.
 struct Http1Sender {
     sender: http1::SendRequest<Body>,
+    form: Form,
     /// Set when a request was abandoned mid-exchange, after which the
     /// connection is never reused.
     abandoned: Arc<AtomicBool>,
@@ -550,7 +684,11 @@ impl Service<Request<Body>> for Http1Sender {
     }
 
     fn call(&mut self, request: Request<Body>) -> Self::Future {
-        let sending = self.sender.send_request(origin_form(request));
+        let request = match &self.form {
+            Form::Absolute(auth) => absolute_form(request, auth.as_ref()),
+            Form::Origin => origin_form(request),
+        };
+        let sending = self.sender.send_request(request);
         Box::pin(async move { Ok(sending.await?) })
     }
 }
@@ -578,6 +716,46 @@ impl Service<Request<Body>> for Http2Sender {
 /// `request` as HTTP/1.1 sends it to an origin server: the path and query as
 /// the target, and the authority in `Host` unless the caller set one.
 fn origin_form(mut request: Request<Body>) -> Request<Body> {
+    set_host(&mut request);
+    let target = request
+        .uri()
+        .path_and_query()
+        .map_or_else(|| Uri::from_static("/"), |path| Uri::from(path.clone()));
+    *request.uri_mut() = target;
+    request
+}
+
+/// `request` as HTTP/1.1 sends it to a proxy (RFC 9112 §3.2.2): the absolute
+/// URI as the target, without user information, the authority in `Host`
+/// unless the caller set one, and `auth` as `Proxy-Authorization` unless the
+/// caller set one.
+fn absolute_form(mut request: Request<Body>, auth: Option<&HeaderValue>) -> Request<Body> {
+    set_host(&mut request);
+    if let Some(auth) = auth
+        && !request.headers().contains_key(header::PROXY_AUTHORIZATION)
+    {
+        request
+            .headers_mut()
+            .insert(header::PROXY_AUTHORIZATION, auth.clone());
+    }
+    let uri = request.uri();
+    if let (Some(scheme), Some(authority)) = (uri.scheme(), uri.authority())
+        && authority.as_str().contains('@')
+    {
+        let path = uri.path_and_query().map_or("/", |path| path.as_str());
+        let host = match authority.port() {
+            Some(port) => format!("{}:{port}", authority.host()),
+            None => authority.host().to_owned(),
+        };
+        if let Ok(target) = Uri::try_from(format!("{scheme}://{host}{path}")) {
+            *request.uri_mut() = target;
+        }
+    }
+    request
+}
+
+/// Sets `Host` to the request URI's authority unless the caller set one.
+fn set_host(request: &mut Request<Body>) {
     let uri = request.uri();
     if let Some(authority) = uri.authority()
         && !request.headers().contains_key(header::HOST)
@@ -585,12 +763,6 @@ fn origin_form(mut request: Request<Body>) -> Request<Body> {
     {
         request.headers_mut().insert(header::HOST, host);
     }
-    let target = request
-        .uri()
-        .path_and_query()
-        .map_or_else(|| Uri::from_static("/"), |path| Uri::from(path.clone()));
-    *request.uri_mut() = target;
-    request
 }
 
 /// The `Host` header for `authority`: without user information, and without
@@ -609,9 +781,9 @@ fn host_header(authority: &Authority, scheme: Option<&Scheme>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BoxError, Dst, origin_form, shared};
+    use super::{BoxError, Dst, Setting, absolute_form, origin_form, shared};
     use crate::{Body, ErrorKind};
-    use http::{Request, Uri, header};
+    use http::{HeaderValue, Request, Uri, header};
     use std::future::{Ready, ready};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -714,7 +886,8 @@ mod tests {
             Dst {
                 tls: true,
                 host: "example.com".into(),
-                port: 443
+                port: 443,
+                proxy: None,
             }
         );
         let dst = Dst::from_uri(&Uri::from_static("http://[::1]:8080/")).expect("origin");
@@ -723,9 +896,69 @@ mod tests {
             Dst {
                 tls: false,
                 host: "::1".into(),
-                port: 8080
+                port: 8080,
+                proxy: None,
             }
         );
+    }
+
+    #[test]
+    fn a_routed_origin_is_keyed_by_its_proxy_too() {
+        let uri = Uri::from_static("http://example.com/");
+        let direct = Dst::from_uri(&uri).expect("origin");
+        let proxy = crate::Proxy::new("http://proxy.example:3128").expect("proxy");
+        let routed = direct
+            .clone()
+            .route(&Setting::Fixed(proxy.clone()))
+            .expect("routed");
+        assert_ne!(routed, direct);
+        assert!(routed.forwarded());
+        let tunnelled = Dst::from_uri(&Uri::from_static("https://example.com/"))
+            .expect("origin")
+            .route(&Setting::Fixed(proxy.clone()))
+            .expect("routed");
+        assert!(!tunnelled.forwarded());
+        let other = direct
+            .clone()
+            .route(&Setting::Fixed(proxy.basic_auth("user", "password")))
+            .expect("routed");
+        assert_ne!(other, routed);
+        assert_eq!(
+            direct.clone().route(&Setting::Direct).expect("direct"),
+            direct
+        );
+    }
+
+    #[test]
+    fn a_proxy_gets_the_absolute_uri_without_userinfo_and_its_credentials() {
+        let auth = HeaderValue::from_static("Basic dTpw");
+        let request = absolute_form(
+            Request::get("http://user:secret@example.com:8080/a?b")
+                .body(Body::empty())
+                .expect("request"),
+            Some(&auth),
+        );
+        assert_eq!(request.uri(), "http://example.com:8080/a?b");
+        assert_eq!(request.headers()[header::HOST], "example.com:8080");
+        assert_eq!(request.headers()[header::PROXY_AUTHORIZATION], "Basic dTpw");
+
+        let request = absolute_form(
+            Request::get("http://example.com/")
+                .header(header::PROXY_AUTHORIZATION, "Basic b3du")
+                .body(Body::empty())
+                .expect("request"),
+            Some(&auth),
+        );
+        assert_eq!(request.uri(), "http://example.com/");
+        assert_eq!(request.headers()[header::PROXY_AUTHORIZATION], "Basic b3du");
+
+        let request = absolute_form(
+            Request::get("http://example.com/")
+                .body(Body::empty())
+                .expect("request"),
+            None,
+        );
+        assert!(!request.headers().contains_key(header::PROXY_AUTHORIZATION));
     }
 
     #[test]

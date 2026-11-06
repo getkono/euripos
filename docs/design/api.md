@@ -185,6 +185,7 @@ The reqwest-parity features (#8) add the knobs whose right value only the caller
 |---|---|
 | `max_redirects` (default 10) | reqwest's redirect policy; an API client that must see every `3xx` sets `0` ([parity.md](parity.md), "Redirects") |
 | `cookie_store` (default off) | reqwest's `cookie_store`; a session behind a login needs it, and a plain client sends no cookie it was not given ([parity.md](parity.md), "Cookies") |
+| `proxy(Proxy)` and `no_proxy()` (default: the platform's proxy) | reqwest's `proxy` and `no_proxy`; a network reachable only through a proxy, or a proxy that needs credentials, has no other way in ([proxy.md](proxy.md)) |
 
 ### Rationale
 

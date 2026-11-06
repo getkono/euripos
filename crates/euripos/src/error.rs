@@ -87,6 +87,12 @@ pub enum ErrorKind {
     /// follows, set by
     /// [`ClientBuilder::max_redirects`](crate::ClientBuilder::max_redirects).
     Redirect,
+    /// The proxy refused the request for want of valid credentials: it
+    /// answered `407 Proxy Authentication Required` (RFC 9110 §15.5.8) to
+    /// the request or to the `CONNECT` for its tunnel. The client does not
+    /// retry with other credentials; set them with
+    /// [`Proxy::basic_auth`](crate::Proxy::basic_auth) or in the proxy's URI.
+    ProxyAuthRequired,
 }
 
 impl fmt::Display for ErrorKind {
@@ -101,6 +107,7 @@ impl fmt::Display for ErrorKind {
             Self::Body => f.write_str("request body failed"),
             Self::Decode => f.write_str("response body could not be decoded"),
             Self::Redirect => f.write_str("too many redirects"),
+            Self::ProxyAuthRequired => f.write_str("proxy authentication required"),
         }
     }
 }
@@ -158,6 +165,13 @@ mod tests {
             Error::new(ErrorKind::Decode).to_string(),
             "response body could not be decoded"
         );
+    }
+
+    #[test]
+    fn a_proxy_refusing_credentials_is_its_own_kind() {
+        let error = Error::new(ErrorKind::ProxyAuthRequired);
+        assert_eq!(error.to_string(), "proxy authentication required");
+        assert_ne!(error.kind(), ErrorKind::Connect);
     }
 
     #[test]
