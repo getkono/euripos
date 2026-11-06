@@ -406,6 +406,17 @@ mod tests {
     }
 
     #[test]
+    fn the_proxy_defaults_to_the_platform_and_the_last_setting_wins() {
+        use crate::proxy::Setting;
+        assert!(matches!(*Client::new().proxy, Setting::System));
+        let proxy = crate::Proxy::new("http://proxy.example").expect("proxy");
+        let client = Client::builder().no_proxy().proxy(proxy.clone()).build();
+        assert!(matches!(*client.proxy, Setting::Fixed(_)));
+        let client = Client::builder().proxy(proxy).no_proxy().build();
+        assert!(matches!(*client.proxy, Setting::Direct));
+    }
+
+    #[test]
     fn client_is_send_sync_and_static() {
         fn assert_bounds<T: Send + Sync + 'static>() {}
         assert_bounds::<Client>();
@@ -416,8 +427,8 @@ mod tests {
     mod tls {
         use super::Client;
         use crate::tls::{Trust, with_alpn};
-        use crate::{Body, Error};
-        use http::{Request, Response, Version};
+        use crate::{Body, ClientBuilder, Error, Proxy};
+        use http::{Method, Request, Response, Version};
         use http_body::Body as _;
         use hyper_util::rt::{TokioExecutor, TokioIo};
         use hyper_util::server::conn::auto;
@@ -426,6 +437,7 @@ mod tests {
         use std::net::SocketAddr;
         use std::pin::Pin;
         use std::sync::Arc;
+        use std::sync::Mutex;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::Duration;
         use tokio::net::TcpListener;
@@ -486,8 +498,14 @@ mod tests {
             }
         }
 
-        /// A client that trusts only `server`'s certificate.
+        /// A client that trusts only `server`'s certificate and connects to
+        /// it directly, whatever proxy the environment names.
         fn client(server: &Server) -> Client {
+            client_with(server, Client::builder().no_proxy())
+        }
+
+        /// A client from `builder` that trusts only `server`'s certificate.
+        fn client_with(server: &Server, builder: ClientBuilder) -> Client {
             let mut roots = rustls::RootCertStore::empty();
             roots.add(server.certificate.clone()).expect("a valid root");
             let config = rustls::ClientConfig::builder_with_provider(Arc::new(
@@ -497,7 +515,7 @@ mod tests {
             .expect("ring supports the default versions")
             .with_root_certificates(roots)
             .with_no_client_auth();
-            Client::builder()
+            builder
                 .total_timeout(Duration::from_secs(10))
                 .build_with(Trust::Fixed(Arc::new(with_alpn(config))))
         }
@@ -557,6 +575,78 @@ mod tests {
                     (Version::HTTP_11, "hello".into())
                 );
             }
+            assert_eq!(server.accepted.load(Ordering::SeqCst), 1);
+        }
+
+        /// A proxy on loopback that opens every tunnel it is asked for,
+        /// recording each `CONNECT`'s target, and the address it listens on.
+        async fn tunnelling_proxy() -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let address = listener.local_addr().expect("address");
+            let targets = Arc::new(Mutex::new(Vec::new()));
+            let record = targets.clone();
+            tokio::spawn(async move {
+                while let Ok((tcp, _)) = listener.accept().await {
+                    let record = record.clone();
+                    tokio::spawn(async move {
+                        let service = hyper::service::service_fn(move |request: Request<_>| {
+                            let target = request.uri().to_string();
+                            let connect = request.method() == Method::CONNECT;
+                            record.lock().expect("the record").push(target.clone());
+                            tokio::spawn(async move {
+                                let Ok(upgraded) = hyper::upgrade::on(request).await else {
+                                    return;
+                                };
+                                let Ok(mut origin) = tokio::net::TcpStream::connect(target).await
+                                else {
+                                    return;
+                                };
+                                let _ = tokio::io::copy_bidirectional(
+                                    &mut TokioIo::new(upgraded),
+                                    &mut origin,
+                                )
+                                .await;
+                            });
+                            let status = if connect { 200 } else { 405 };
+                            async move {
+                                Ok::<_, Error>(
+                                    Response::builder()
+                                        .status(status)
+                                        .body(Body::empty())
+                                        .expect("a valid response"),
+                                )
+                            }
+                        });
+                        let _ = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(TokioIo::new(tcp), service)
+                            .with_upgrades()
+                            .await;
+                    });
+                }
+            });
+            (address, targets)
+        }
+
+        /// An `https` request through a proxy reaches the origin through a
+        /// `CONNECT` tunnel, verifies the origin's certificate for its own
+        /// name, and negotiates HTTP/2 end to end; later requests share the
+        /// tunnel.
+        #[tokio::test]
+        async fn https_through_a_proxy_tunnels_and_negotiates_h2_with_the_origin() {
+            let server = server(&[b"h2", b"http/1.1"]).await;
+            let (proxy, targets) = tunnelling_proxy().await;
+            let proxy = Proxy::new(&format!("http://{proxy}")).expect("proxy");
+            let client = client_with(&server, Client::builder().proxy(proxy));
+            for _ in 0..2 {
+                assert_eq!(
+                    get(&client, &server).await,
+                    (Version::HTTP_2, "hello".into())
+                );
+            }
+            assert_eq!(
+                *targets.lock().expect("the record"),
+                [format!("localhost:{}", server.address.port())]
+            );
             assert_eq!(server.accepted.load(Ordering::SeqCst), 1);
         }
 
