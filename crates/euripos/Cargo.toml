@@ -14,10 +14,9 @@ categories = ["network-programming", "web-programming::http-client"]
 [features]
 default = ["crypto-ring"]
 # The crypto provider rustls and quinn use, one `crypto-<provider>` feature
-# each; see docs/adr/0001-crypto-provider.md. It selects nothing yet: the
-# client uses the process-wide rustls provider until ring can be in the graph.
-# TODO(#32): enable `rustls/ring` and `tokio-rustls/ring`.
-crypto-ring = []
+# each; see docs/adr/0001-crypto-provider.md. With none enabled, the client
+# uses the process-wide rustls provider the application installed.
+crypto-ring = ["rustls/ring", "tokio-rustls/ring"]
 # The response content codings the client asks for and decodes, one feature
 # each; none is on by default. Each adds a pure-Rust decoder and no public
 # item (docs/design/parity.md, "Response decompression").

@@ -146,10 +146,11 @@ async fn connect_timeout_fires_while_the_connection_does_not_open() {
     assert_timed_out(result, elapsed, TimeoutKind::Connect);
 }
 
+// The client's own provider, so nothing is installed for the process: without
+// `crypto-ring` the request would fail before its handshake starts.
+#[cfg(feature = "crypto-ring")]
 #[tokio::test]
 async fn tls_timeout_fires_while_the_server_never_answers_the_client_hello() {
-    // TODO(#32): drop once `crypto-ring` selects ring.
-    let _ = rustls::crypto::ring::default_provider().install_default();
     let address = server(hold).await;
     let client = client(|builder| builder.tls_timeout(SHORT));
     let (result, elapsed) = bounded(get(&client, format!("https://{address}/"))).await;
