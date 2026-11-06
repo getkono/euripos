@@ -13,7 +13,9 @@ mod linux;
 mod windows;
 
 #[cfg(target_os = "android")]
-pub(crate) use android::{bind_to_network, network_source, platform_verifier, query_https};
+pub(crate) use android::{
+    bind_to_network, network_source, platform_verifier, proxy_routes, query_https,
+};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) use apple::{Stream, connect, network_source, query_https};
 #[cfg(target_os = "linux")]
@@ -61,7 +63,7 @@ pub(crate) const OBSERVES_NETWORK: bool = cfg!(any(
 ///
 /// Where the platform has no proxy configuration to read, every request
 /// goes to its origin.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 #[allow(
     clippy::unused_async,
     clippy::unnecessary_wraps,

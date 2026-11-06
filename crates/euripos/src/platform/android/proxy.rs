@@ -23,10 +23,6 @@ pub(super) struct Settings {
 
 /// Where a connection to one host should go.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the platform proxy path, #63")
-)]
 pub(crate) enum Hop {
     /// Straight to the origin.
     Direct,
@@ -73,10 +69,6 @@ impl Settings {
     /// local PAC proxy, so every request goes there, and direct until that
     /// proxy has a port; a fixed proxy carries every host its exclusions do
     /// not match.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "consumed by the platform proxy path, #63")
-    )]
     pub(super) fn hop(&self, host: &str) -> Hop {
         let Some(proxy) = &self.host else {
             return Hop::Direct;

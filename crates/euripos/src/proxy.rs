@@ -166,10 +166,41 @@ impl Setting {
     }
 }
 
+/// The routes a platform's proxy list names, in its order: each entry a
+/// proxy's `host[:port]` (or an `http` URI), or `None` for the origin
+/// directly.
+///
+/// An entry that names no `http` proxy (a SOCKS proxy, or one reached over
+/// TLS) is skipped. A list of nothing but such entries fails as
+/// [`ErrorKind::Connect`], as an unusable proxy in the environment does,
+/// rather than sending the request around the proxy configured; an empty
+/// list is the origin directly.
+#[cfg_attr(
+    not(any(test, target_os = "android")),
+    expect(dead_code, reason = "the other platforms' sources are wired next")
+)]
+pub(crate) fn platform_routes<'a>(
+    entries: impl IntoIterator<Item = Option<&'a str>>,
+) -> Result<Vec<Option<Hop>>, Error> {
+    let mut routes = Vec::new();
+    let mut skipped = None;
+    for entry in entries {
+        match entry.map(proxy_value).transpose() {
+            Ok(route) => routes.push(route),
+            Err(error) => skipped = Some(error),
+        }
+    }
+    match skipped {
+        Some(error) if routes.is_empty() => Err(error),
+        _ if routes.is_empty() => Ok(vec![None]),
+        _ => Ok(routes),
+    }
+}
+
 /// The proxy a configured value names: an `http` URI, or `host[:port]`,
 /// which is an `http` proxy.
 #[cfg_attr(
-    not(any(test, target_os = "linux")),
+    not(any(test, target_os = "linux", target_os = "android")),
     expect(dead_code, reason = "the other platforms' sources are wired next")
 )]
 pub(crate) fn proxy_value(value: &str) -> Result<Hop, Error> {
@@ -242,7 +273,7 @@ fn percent_decode(text: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Hop, Proxy, Setting, base64, percent_decode, proxy_value};
+    use super::{Hop, Proxy, Setting, base64, percent_decode, platform_routes, proxy_value};
     use crate::ErrorKind;
 
     /// The route through the proxy at `host:port` with no credentials, as
@@ -365,6 +396,18 @@ mod tests {
             hop("proxy.example", 80)
         );
         let error = proxy_value("socks5://proxy.example:1080").expect_err("socks");
+        assert_eq!(error.kind(), ErrorKind::Connect);
+    }
+
+    #[test]
+    fn a_platform_list_keeps_its_order_and_skips_what_is_no_http_proxy() {
+        assert_eq!(
+            platform_routes([Some("a:1"), None, Some("socks5://b:2"), Some("c:3")]).expect("ok"),
+            [hop("a", 1), None, hop("c", 3)]
+        );
+        assert_eq!(platform_routes([]).expect("ok"), [None]);
+        assert_eq!(platform_routes([None]).expect("ok"), [None]);
+        let error = platform_routes([Some("https://secure:443")]).expect_err("no http proxy");
         assert_eq!(error.kind(), ErrorKind::Connect);
     }
 
