@@ -25,7 +25,7 @@ pub(super) struct Settings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "consumed by the proxy path, #49")
+    expect(dead_code, reason = "consumed by the platform proxy path, #63")
 )]
 pub(crate) enum Hop {
     /// Straight to the origin.
@@ -75,7 +75,7 @@ impl Settings {
     /// not match.
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "consumed by the proxy path, #49")
+        expect(dead_code, reason = "consumed by the platform proxy path, #63")
     )]
     pub(super) fn hop(&self, host: &str) -> Hop {
         let Some(proxy) = &self.host else {

@@ -243,7 +243,7 @@ unsafe extern "system" fn on_change(context: *mut c_void, _timed_out: bool) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "consumed by the proxy path, #49")
+    expect(dead_code, reason = "consumed by the platform proxy path, #63")
 )]
 pub(crate) enum Hop {
     /// Straight to the origin.
@@ -257,7 +257,7 @@ pub(crate) enum Hop {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "consumed by the proxy path, #49")
+    expect(dead_code, reason = "consumed by the platform proxy path, #63")
 )]
 pub(crate) struct Auto {
     pub(crate) detect: bool,
@@ -266,7 +266,7 @@ pub(crate) struct Auto {
 
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "consumed by the proxy path, #49")
+    expect(dead_code, reason = "consumed by the platform proxy path, #63")
 )]
 impl Auto {
     /// The current user's automatic configuration; `None` where the user
@@ -285,7 +285,7 @@ impl Auto {
 /// discarded when the network changes.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "consumed by the proxy path, #49")
+    expect(dead_code, reason = "consumed by the platform proxy path, #63")
 )]
 pub(crate) struct Resolver {
     session: *mut c_void,
@@ -294,7 +294,7 @@ pub(crate) struct Resolver {
 
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "consumed by the proxy path, #49")
+    expect(dead_code, reason = "consumed by the platform proxy path, #63")
 )]
 impl Resolver {
     /// Open the `WinHTTP` session the resolution runs in.
