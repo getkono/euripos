@@ -25,9 +25,12 @@ const LONG: Duration = Duration::from_secs(20);
 const BOUND: Duration = Duration::from_secs(10);
 
 /// A client whose timeouts are all [`LONG`] except those `configure` sets.
+/// It ignores the platform's proxy, so its loopback requests reach the test
+/// server whatever proxy the environment names.
 fn client(configure: impl FnOnce(euripos::ClientBuilder) -> euripos::ClientBuilder) -> Client {
     configure(
         Client::builder()
+            .no_proxy()
             .connect_timeout(LONG)
             .tls_timeout(LONG)
             .total_timeout(LONG)
