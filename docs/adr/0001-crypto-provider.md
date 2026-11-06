@@ -1,6 +1,6 @@
 # ADR 0001: ring as the one crypto provider, and a binary-size budget
 
-Status: accepted. Issue #17.
+Status: accepted. Issue #17; amended by #28 ("aws-lc-rs as a second provider").
 
 ## Crypto provider
 
@@ -37,7 +37,7 @@ The feature scheme, which any later provider follows:
 
 ### Rationale
 
-ring is the smaller provider, builds on every supported target with only a C compiler, and is a rustls and quinn provider, so one feature can switch both. aws-lc-rs's possible advantages are performance, which Principle 3 does not let euripos claim without a netlab result, and FIPS and post-quantum, which no issue in scope asks for. The evaluation of aws-lc-rs for speed against its size cost is #28; if it wins, it is admitted as `crypto-aws-lc-rs` under the scheme above, with this ADR superseded or amended.
+ring is the smaller provider, builds on every supported target with only a C compiler, and is a rustls and quinn provider, so one feature can switch both. aws-lc-rs's possible advantages are performance, which Principle 3 does not let euripos claim without a netlab result, and FIPS and post-quantum, which no issue in scope asks for. The evaluation of aws-lc-rs for speed against its size cost is recorded below, under "aws-lc-rs as a second provider"; if it wins, it is admitted as `crypto-aws-lc-rs` under the scheme above, with this ADR superseded or amended.
 
 The scheme is shaped so that change is not breaking. Adding a feature is additive to `cargo-semver-checks`. A build with no provider feature is allowed now, so admitting a second provider never has to remove a `compile_error!`. Letting the non-default provider win means that admitting it, or later making it the default, never changes what an existing `crypto-ring` build gets, and a feature enabled through Cargo's feature unification cannot silently cancel a user's explicit choice. Option 3 has no default, so the plain `euripos = "0.1"` dependency would not work, against the rule that default features make a working client on every platform. Option 4 is a second TLS stack per platform, which Principle 2 rules out without an ADR of its own.
 
@@ -93,3 +93,52 @@ The first measurement is of the minimal client as it stands before TLS: it links
 ### Validated by
 
 The `size (<target>)` jobs of the `size-budget` workflow on every pull request and push to `main`; each job prints the measured size, the budget and the share used, and fails above the budget.
+
+## aws-lc-rs as a second provider
+
+Issue #28, open: it is `evidence-gated`, so it is not done until the performance results exist. Status: not admitted for now, on the size measurement below; #60 makes the remaining measurements, and #28 closes only when they decide it.
+
+### Problem
+
+aws-lc-rs may be faster than ring on some handshakes and ciphers, and it is the provider rustls, tokio-rustls, hyper-rustls and quinn enable by default. Admitting it as `crypto-aws-lc-rs` is worth its size cost only if it wins on a named metric by more than that cost is worth.
+
+### Constraints
+
+- Optimizations are evidence-gated (`docs/scope.md`, Principle 3; CLAUDE.md): a provider admitted for speed names its metric and shows a netlab win over the plain hyper baseline and over reqwest.
+- Size matters most on iOS and Android, and differs by target.
+- Admission follows the feature scheme above: a `crypto-aws-lc-rs` feature, its crate and feature bans removed from `deny.toml` in the same change, and the size budgets raised in a commit that says by how much and why.
+- Nothing in scope asks for FIPS or post-quantum key exchange; a request for either is a separate input to this decision.
+
+### Measurement
+
+The size aws-lc-rs adds over ring was measured on `x86_64-unknown-linux-gnu`, the one supported target a Linux host can link without a platform SDK. The minimal client of the size budget links no provider until #32 wires `crypto-ring` into rustls, and with an empty `main` it would drop a provider's code as dead anyway, so the measured program is a standalone TLS client whose provider code is reachable. It connects over TCP, builds a `rustls::ClientConfig` with `builder_with_provider` and `rustls_platform_verifier::Verifier`, completes a handshake through `tokio_rustls::TlsConnector` on a current-thread tokio runtime, and reads a response. Three builds differ only in the provider feature on rustls and tokio-rustls: none (TCP only, no rustls), `ring`, and `aws-lc-rs`. The versions are the ones `Cargo.lock` holds where it has them: rustls 0.23.46, tokio-rustls 0.26.6, rustls-platform-verifier 0.7.1, tokio 1.54.1, ring 0.17.14; and aws-lc-rs 1.19.0 with aws-lc-sys 0.47.0. Rust 1.99.1 (`rust-toolchain.toml`), GCC 16.2.1, release profile with symbols stripped as `mise run size` builds it.
+
+| Build | Stripped bytes | With fat LTO, one codegen unit |
+|---|---|---|
+| no TLS | 548096 | |
+| rustls with ring | 2165448 | 1783968 |
+| rustls with aws-lc-rs | 4316640 | 3916928 |
+| aws-lc-rs over ring | +2151192 (+99%) | +2132960 (+120%) |
+
+That is about 2.1 MB per binary, in line with the 3 MB reqwest#3009 reported, and it roughly doubles a TLS client. LTO does not reduce it, since most of it is aws-lc's C and assembly, which Rust's LTO does not reach.
+
+Handshake cost and bulk throughput need mid-range iOS and Android devices and the netlab workloads, which this repository has not yet built (#5, #10); the size on the other eight supported targets needs their hosted runners. Neither was measured here.
+
+### Alternatives
+
+1. **Admit `crypto-aws-lc-rs` now**, off by default, on the size measurement alone.
+2. **Keep ring the only provider**, keep the bans in `deny.toml`, and re-decide once the performance results exist.
+3. **Admit it for FIPS or post-quantum key exchange**, whatever its speed.
+
+### Choice
+
+2. aws-lc-rs is not admitted. `deny.toml` keeps banning `aws-lc-rs`, `aws-lc-sys`, `aws-lc-fips-sys` and `rustls-post-quantum`, and the rustls, tokio-rustls, hyper-rustls, quinn and quinn-proto features that pull them in; no `crypto-aws-lc-rs` feature exists and the size budgets are unchanged. #60 measures the rest, and #28 then either admits it under the scheme above or records that it lost.
+
+### Rationale
+
+The size cost is measured and large; the benefit is not measured at all, and Principle 3 lets euripos claim no speed it has not shown on netlab. Option 1 would put a provider in the public feature set on no evidence, and once a feature is public it cannot be removed without a breaking change; leaving it out costs nothing, because the scheme above admits it later without one. Option 3 answers a request nobody in scope has made. An application that needs aws-lc-rs today can still install it as the process-wide rustls provider and build euripos without `crypto-ring`, which the scheme allows (a build with no `crypto-*` feature); `deny.toml` keeps it out of euripos's own graph, not the application's.
+
+### Validated by
+
+- The measurement above, which #60 repeats per target once #32 has wired ring into the minimal client.
+- `mise run lint:deny` fails if aws-lc-rs, aws-lc-sys or aws-lc-fips-sys enters the graph, or a feature that pulls one in is enabled.
