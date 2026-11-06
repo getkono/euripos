@@ -62,11 +62,13 @@ async fn read_incoming(mut body: Incoming) -> Bytes {
     out.into()
 }
 
-/// A client that bounds each request by [`BOUND`].
+/// A client that bounds each request by [`BOUND`] and ignores the platform's
+/// proxy, so its loopback requests reach the test server whatever proxy the
+/// environment names.
 pub(crate) fn client(
     configure: impl FnOnce(euripos::ClientBuilder) -> euripos::ClientBuilder,
 ) -> Client {
-    configure(Client::builder().total_timeout(BOUND)).build()
+    configure(Client::builder().no_proxy().total_timeout(BOUND)).build()
 }
 
 /// `http://ADDRESS/PATH`.
