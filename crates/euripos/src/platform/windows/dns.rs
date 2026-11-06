@@ -53,6 +53,22 @@ pub(crate) async fn query_https(_network: Option<NetworkId>, name: &str) -> Opti
 /// Start the query for `name`: the query in flight with where its answer
 /// arrives, or the answer where it completed at once.
 fn start(name: &str) -> Result<(Pending, oneshot::Receiver<Option<Answer>>), Option<Answer>> {
+    start_with(name, |request, result, cancel| {
+        // SAFETY: `start_with`'s contract for `send`.
+        unsafe { DnsQueryEx(request, result, Some(cancel)) }
+    })
+}
+
+/// [`start`], with `send` making the call `DnsQueryEx` makes, so that a test
+/// can make a query complete at once. `send` is given a request whose name
+/// and callback context live until the callback has run, and the query's
+/// own result and cancel handle; it returns `DNS_REQUEST_PENDING` where the
+/// callback will run, and otherwise the query's status with its records, or
+/// null, in the result.
+fn start_with(
+    name: &str,
+    send: impl FnOnce(*const DNS_QUERY_REQUEST, *mut DNS_QUERY_RESULT, *mut DNS_QUERY_CANCEL) -> i32,
+) -> Result<(Pending, oneshot::Receiver<Option<Answer>>), Option<Answer>> {
     if name.contains('\0') {
         return Err(None);
     }
@@ -80,16 +96,10 @@ fn start(name: &str) -> Result<(Pending, oneshot::Receiver<Option<Answer>>), Opt
         pQueryCompletionCallback: Some(on_complete),
         pQueryContext: context.cast_mut().cast(),
     };
-    // SAFETY: `request` outlives the call; the name, the result and the
-    // cancel handle it points to are `query`'s, which `context` keeps alive
-    // until the callback has run.
-    let status = unsafe {
-        DnsQueryEx(
-            &raw const request,
-            query.result.get(),
-            Some(query.cancel.get()),
-        )
-    };
+    // `request` outlives the call; the name, the result and the cancel
+    // handle it points to are `query`'s, which `context` keeps alive until
+    // the callback has run.
+    let status = send(&raw const request, query.result.get(), query.cancel.get());
     if status != DNS_REQUEST_PENDING {
         // Completed without the callback, which will not run: its reference
         // is released here, and the records are in `result`.
@@ -290,8 +300,9 @@ unsafe fn soa(record: *const DNS_RECORDW) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use std::mem::offset_of;
+    use std::mem::{ManuallyDrop, offset_of};
     use std::ptr;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use windows::Win32::Foundation::{
@@ -303,7 +314,7 @@ mod tests {
         DNSREC_ADDITIONAL, DNSREC_ANSWER, DNSREC_AUTHORITY,
     };
 
-    use super::{SUCCESS, answer, query_https};
+    use super::{NAME_ERROR, Query, SUCCESS, answer, query_https, start_with};
     use crate::dns::{Answer, Record};
 
     /// A record with room for RDATA past the end of `Data`, as `DnsQueryEx`
@@ -494,6 +505,37 @@ mod tests {
             answer.is_ok(),
             "the DNS Client service bounds its own query"
         );
+    }
+
+    // A query `DnsQueryEx` completes without the callback is answered from
+    // its status and records at once, and the callback's reference to the
+    // query is released: none is left once the answer is back.
+    #[test]
+    fn a_query_that_completes_at_once_is_answered_and_released() {
+        for (status, expected) in [
+            (NAME_ERROR, Some(Answer::NoRecords { negative_ttl: None })),
+            (DNS_ERROR_RCODE_SERVER_FAILURE.0.cast_signed(), None),
+        ] {
+            let mut query = None;
+            let started = start_with("example.com", |request, result, _cancel| {
+                // SAFETY: `start_with` passes a live request whose context is
+                // the callback's reference to the query, and the query's
+                // result; the reference is borrowed here, not released.
+                unsafe {
+                    let context = (*request).pQueryContext.cast::<Query>().cast_const();
+                    let context = ManuallyDrop::new(Arc::from_raw(context));
+                    query = Some(Arc::downgrade(&context));
+                    (*result).pQueryRecords = ptr::null_mut();
+                }
+                status
+            });
+            match started {
+                Err(answer) => assert_eq!(answer, expected, "{status}"),
+                Ok(_) => panic!("{status}: the query completed, yet is pending"),
+            }
+            let query = query.expect("the query was sent");
+            assert_eq!(query.strong_count(), 0, "{status}: a reference leaked");
+        }
     }
 
     #[tokio::test]
