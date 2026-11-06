@@ -144,6 +144,16 @@ mod tests {
         assert_eq!(source.as_deref(), Some("not initialised"));
     }
 
+    #[cfg(not(feature = "crypto-ring"))]
+    #[test]
+    fn without_a_provider_feature_the_installed_default_is_used() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let installed = rustls::crypto::CryptoProvider::get_default()
+            .expect("a provider is installed for the process");
+        let provider = super::provider().expect("the installed provider is found");
+        assert!(Arc::ptr_eq(&provider, installed));
+    }
+
     #[test]
     fn alpn_offers_h2_before_http1() {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
