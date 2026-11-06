@@ -257,8 +257,11 @@ impl ClientBuilder {
     /// except for the hosts `no_proxy` names; a value without a scheme is an
     /// `http` proxy, and one with another scheme fails the request as
     /// [`ErrorKind::Connect`](crate::ErrorKind::Connect) rather than send it
-    /// around the proxy. Other platforms' proxy settings are not yet read,
-    /// and requests there go to their origin.
+    /// around the proxy. On Android it is the default network's proxy, on
+    /// Windows the `WinHTTP` settings with their PAC script or WPAD, and on
+    /// macOS and iOS the system proxy settings with their PAC script. Where
+    /// a PAC script lists several proxies, a request that cannot connect
+    /// through one moves on to the next.
     pub fn proxy(mut self, proxy: Proxy) -> Self {
         self.proxy = proxy::Setting::Fixed(proxy);
         self

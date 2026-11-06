@@ -25,7 +25,7 @@ const CHILD: &str = "EURIPOS_TEST_REDIRECT_CHILD";
 #[tokio::test]
 #[cfg_attr(
     not(target_os = "linux"),
-    ignore = "the environment is the proxy source on Linux only (#63)"
+    ignore = "the environment is the proxy source on Linux only"
 )]
 async fn a_redirect_to_a_host_no_proxy_names_leaves_the_proxy() {
     if std::env::var_os(CHILD).is_some() {

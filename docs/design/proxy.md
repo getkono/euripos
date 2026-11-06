@@ -27,7 +27,7 @@ A client on a network that reaches the internet only through an HTTP proxy canno
 
 2. `Dst`, the pool key, gains the proxy (`Option<Hop>`: host, port and the `Proxy-Authorization` value), so a proxied origin never shares a connection with the direct one or with the same origin through other credentials. The connector connects to the proxy; for `https` it sends `CONNECT` with hyper's `http1` client connection `with_upgrades`, and runs the TLS handshake with the origin's name over `hyper::upgrade::Upgraded`. For `http`, the HTTP/1.1 sender keeps the absolute URI as the target (user information removed), sets `Host` and adds the proxy's `Proxy-Authorization`. The connect timeout covers the TCP connection to the proxy and the `CONNECT` exchange; the TLS timeout the handshake through the tunnel.
 
-`ClientBuilder::proxy(Proxy)` sends every request through one proxy; `ClientBuilder::no_proxy()` sends every request directly. Without either, each request asks the platform when it is sent: on Linux (`platform::PROXY_FROM_ENVIRONMENT`), `https_proxy` or `http_proxy` by the request's scheme, then `all_proxy`, lowercase before uppercase, unless `no_proxy` names the host (`*`, a name and the hosts under it, an IP address, or `ADDRESS/BITS`). `HTTP_PROXY` is ignored when `REQUEST_METHOD` is set (CVE-2016-5385, "httpoxy"). A value without a scheme is an `http` proxy. On the other platforms requests go direct until their sources are wired (#63).
+`ClientBuilder::proxy(Proxy)` sends every request through one proxy; `ClientBuilder::no_proxy()` sends every request directly. Without either, each request asks the platform when it is sent ("Platform proxy" below). On Linux the platform's configuration is the environment: `https_proxy` or `http_proxy` by the request's scheme, then `all_proxy`, lowercase before uppercase, unless `no_proxy` names the host (`*`, a name and the hosts under it, an IP address, or `ADDRESS/BITS`). `HTTP_PROXY` is ignored when `REQUEST_METHOD` is set (CVE-2016-5385, "httpoxy"). A value without a scheme is an `http` proxy.
 
 ### Rationale
 
@@ -39,7 +39,50 @@ A proxy reached over TLS (`https://` proxy URI) and SOCKS are not supported; nei
 
 ### Validated by
 
-`crates/euripos/tests/proxy/`: through a loopback proxy the test starts, an `http` request arrives in absolute form with `Host`, and an `https` request (in `client.rs`'s TLS tests, which trust a test certificate) arrives at the origin through a `CONNECT` tunnel the proxy saw, over HTTP/2 when the origin offers it; `no_proxy()` bypasses the proxy; a proxy that refuses the tunnel fails as `ErrorKind::Connect`; on Linux, a redirect from a host the environment's proxy serves to one `no_proxy` names reaches its target directly, so each hop chooses its own route. Unit tests in `src/proxy.rs` cover the environment's variable order, `no_proxy` matching and the httpoxy rule; `src/pool.rs` covers the pool key and the absolute form.
+`crates/euripos/tests/proxy/`: through a loopback proxy the test starts, an `http` request arrives in absolute form with `Host`, and an `https` request (in `client.rs`'s TLS tests, which trust a test certificate) arrives at the origin through a `CONNECT` tunnel the proxy saw, over HTTP/2 when the origin offers it; `no_proxy()` bypasses the proxy; a proxy that refuses the tunnel fails as `ErrorKind::Connect`; on Linux, a redirect from a host the environment's proxy serves to one `no_proxy` names reaches its target directly, so each hop chooses its own route. Unit tests in `src/platform/linux/proxy.rs` cover the environment's variable order, `no_proxy` matching and the httpoxy rule; `src/pool.rs` covers the pool key and the absolute form.
+
+## Platform proxy
+
+### Problem
+
+Without a caller's proxy, a request should take the route the platform's own HTTP stack would give it (docs/scope.md, "Platform integration"): the environment on Linux, `LinkProperties`' proxy on Android, the WinHTTP proxy with PAC and WPAD on Windows, and the system proxy on macOS and iOS. Each source was read for `NetworkFacts::proxy()`, and Android's and Windows' could already name a proxy for a host, but only Linux's routed anything (#63). A PAC script answers with an ordered list ("`PROXY a:3128; PROXY b:3128; DIRECT`"), which a browser walks until one entry connects.
+
+### Constraints
+
+- One implementation per platform, in its module; the proxy path calls one capability, `platform::proxy_routes`, and never branches on `cfg`.
+- The proxy is read for each request, so a change applies from the next one (reqwest #2674); no settings are cached across requests by the client.
+- WinHTTP's `WinHttpGetProxyForUrl` and CFNetwork's PAC execution block while a script is fetched and run, and must not hold up a runtime worker.
+- The four timeouts stay the only bounds on a request.
+- The pool key stays one route per key ("Proxy path").
+
+### Alternatives
+
+1. Each platform returns the ordered list of routes for the request's origin, resolved off the runtime where it blocks; the pool tries them in order, moving on when one cannot be connected.
+2. Each platform returns one route, the list's first; a dead first proxy fails the request.
+3. Leave the sources unread and document `ClientBuilder::proxy` as the way to use the platform's proxy.
+
+### Choice
+
+1. `platform::proxy_routes(tls, host, port)` returns the routes, each a `Hop` or `None` for the origin directly; `proxy::platform_routes` turns a platform's list of `host[:port]` entries into them, skipping an entry that names no `http` proxy (SOCKS, a TLS proxy) and failing as `ErrorKind::Connect` where nothing else is left, as an unusable environment proxy does. `Pool::send` takes the routes and checks out a connection by the first; one that fails to connect (`ErrorKind::Connect`, or the connect timeout) gives way to the next, each with its own connect timeout, while a TLS failure or a `407` is reported as it is. The lookup runs inside the total timeout.
+
+- **Linux**: the environment, as above, moved into `platform/linux/proxy.rs`.
+- **Android**: the default network's `getDefaultProxy()` as the callback last reported it: the fixed proxy unless one of its exclusions matches the host, or the platform's local PAC proxy (`localhost:port`) once it listens, which runs the script itself; direct where no callback runs. One proxy serves `http` and `https`.
+- **Windows**, on a blocking thread: the current user's WinHTTP settings, or the machine's default where the user has none. An automatic configuration (WPAD, a PAC URL, or both) is resolved for the request's origin through the process's one `Resolver` (`docs/design/network-context.md`), which discards its cache when the network changes; its whole list is returned. Where it gives none (discovery finds no script, or the script cannot be fetched or fails), the fixed proxy applies: the list's `https=` or `http=` entry for the request's scheme, or else its entry with no scheme, unless the bypass list names the host. A bypass entry is a pattern in which `*` matches any run of characters, with an optional scheme before it and port after it; `<local>` names a host without a dot; loopback (`localhost`, `127.0.0.0/8`, `::1`) is bypassed unless the list holds `<-loopback>`.
+- **macOS and iOS**, on a blocking thread: `CFNetworkCopySystemProxySettings`, applied to the request's origin by `CFNetworkCopyProxiesForURL`, which applies the exceptions and picks the `http` or `https` proxy. A PAC entry, by URL or by script, is run with `CFNetworkExecuteProxyAutoConfigurationURL` or `…Script` on that thread's run loop and replaced by the script's list; a script that cannot be fetched or run, or one that has not answered after the default total timeout, gives nothing and the request goes direct. Network.framework keeps `nw_parameters_set_prefer_no_proxy` ([ADR 0003](../adr/0003-apple-network-framework.md)): the client connects to the proxy it chose, and the framework must not proxy that connection again. `NetworkFacts::proxy()` stays `Unknown` here: the settings send no change signal a path reading could follow.
+
+The script is asked about the origin (`scheme://host:port/`), never the path or query.
+
+### Rationale
+
+Option 1 is what a PAC list means and what the browsers and WinHTTP's own clients do with it; option 2 turns a dead first proxy, the case the list exists for, into a failed request. Option 3 leaves the scope's "Live system proxy, PAC/WPAD on every platform" undone and asks every caller to reimplement it. Trying the next route only after a failure to connect keeps a request from being sent twice: nothing has been written when a checkout fails. Resolving the list for the origin rather than the full URL keeps one list per origin, matches what Chrome passes for `https`, and keeps paths and queries out of a script fetched from whoever answered WPAD.
+
+Falling back from an automatic configuration that gives nothing to the fixed proxy is Windows' own behaviour, and matters because "Automatically detect settings" is on by default: a user who also sets a fixed proxy expects it to apply where discovery finds no script. The implicit loopback bypass is Windows' too. On Apple, CFNetwork already implements the settings' semantics (exceptions, simple hostnames, per-scheme proxies), so the client asks it rather than reading the dictionary's keys itself. Each blocking lookup runs on tokio's blocking pool, and its result arrives within the request's total timeout; the run-loop wait on Apple is bounded so that a script that never answers does not hold a blocking thread for ever.
+
+### Validated by
+
+`src/pool.rs`: a route that cannot connect gives way to the next proxy and to the origin directly; the last one's failure fails the request as `ErrorKind::Connect`; only a failure to connect fails over. `src/proxy.rs`: a platform list keeps its order and skips what is no `http` proxy; a value without a scheme is an `http` proxy; the wildcard patterns. `src/platform/android/mod.rs`: reported settings become the route, including an excluded host and an IPv6 proxy, and without an Android `Context` the route is direct (on the emulator). `src/platform/windows/proxy.rs`: the per-scheme entry of a fixed proxy list, every form of bypass entry and the loopback rule, the user-to-machine fallback, a PAC script served on loopback resolved per URL through WinHTTP, and the hosted runner's settings giving a route. `src/platform/apple/proxy.rs`: a PAC script run by CFNetwork, inline and fetched from loopback, read back in its order with `DIRECT` and SOCKS entries; a script that cannot be fetched gives nothing; the hosted runner's settings give a route.
+
+Not covered on hosted CI: a real WPAD discovery, a Windows user's fixed proxy and bypass list read from the registry, a macOS or iOS system proxy configured in Settings, and Android's `getDefaultProxy()` from a running app; each needs a configured device, and the parsing and selection each feeds is tested from its inputs above.
 
 ## Proxy authentication
 
