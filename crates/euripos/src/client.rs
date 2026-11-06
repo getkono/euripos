@@ -12,10 +12,10 @@ use crate::decompress;
 use crate::marker::NotUnwindSafe;
 use crate::monitor::NetworkMonitor;
 use crate::pool::{Dst, Pool};
-use crate::redirect;
 use crate::timeout::{Timeouts, deadline, until};
 use crate::tls::Trust;
 use crate::{Body, Error, ErrorKind, NetworkFacts, TimeoutKind};
+use crate::{Proxy, proxy, redirect};
 
 /// An HTTP client.
 ///
@@ -28,6 +28,7 @@ pub struct Client {
     max_redirects: u32,
     /// The cookie store, when the client keeps one.
     cookies: Option<Arc<Jar>>,
+    proxy: Arc<proxy::Setting>,
     pool: Arc<Pool>,
     _unwind: NotUnwindSafe,
 }
@@ -38,6 +39,7 @@ impl fmt::Debug for Client {
             .field("timeouts", &self.timeouts)
             .field("max_redirects", &self.max_redirects)
             .field("cookie_store", &self.cookies.is_some())
+            .field("proxy", &self.proxy)
             .finish_non_exhaustive()
     }
 }
@@ -75,9 +77,11 @@ impl Client {
     ///
     /// Resolves to an [`Error`] whose [`kind`](Error::kind) says whether the
     /// connection, the TLS handshake, a timeout, the protocol, a network
-    /// change, the request body or too many redirects failed the request, or
-    /// that it was cancelled. A URI with no
-    /// `http` or `https` origin fails as [`ErrorKind::Connect`](crate::ErrorKind::Connect).
+    /// change, the request body or too many redirects failed the request,
+    /// that the proxy refused its credentials, or that it was cancelled. A
+    /// URI with no `http` or `https` origin, or a proxy in the environment
+    /// that names no `http` proxy, fails as
+    /// [`ErrorKind::Connect`](crate::ErrorKind::Connect).
     ///
     /// # Panics
     ///
@@ -151,7 +155,7 @@ impl Client {
                     .headers_mut()
                     .insert(header::ACCEPT_ENCODING, accept_encoding.clone());
             }
-            let dst = Dst::from_uri(&uri)?;
+            let dst = Dst::from_uri(&uri)?.route(&self.proxy)?;
             let (response, lease) =
                 until(total, TimeoutKind::Total, self.pool.send(dst, request)).await?;
             if let Some(jar) = &self.cookies {
@@ -213,17 +217,19 @@ impl Default for Client {
 
 /// Builds a [`Client`].
 ///
-/// The settings are the four timeouts, how many redirects to follow, and
-/// whether to keep cookies. Each timeout is finite: it can be changed but
-/// not turned off. The defaults are 10 seconds to connect, 10 seconds for
-/// the TLS handshake, 30 seconds for the whole request, 30 seconds for a
-/// read that receives nothing, 10 redirects, and no cookie store.
+/// The settings are the four timeouts, how many redirects to follow,
+/// whether to keep cookies, and the proxy. Each timeout is finite: it can be
+/// changed but not turned off. The defaults are 10 seconds to connect, 10
+/// seconds for the TLS handshake, 30 seconds for the whole request, 30
+/// seconds for a read that receives nothing, 10 redirects, no cookie store,
+/// and the platform's proxy.
 #[derive(Debug)]
 #[must_use]
 pub struct ClientBuilder {
     timeouts: Timeouts,
     max_redirects: u32,
     cookie_store: bool,
+    proxy: proxy::Setting,
 }
 
 impl ClientBuilder {
@@ -233,7 +239,31 @@ impl ClientBuilder {
             timeouts: Timeouts::default(),
             max_redirects: redirect::DEFAULT_MAX_REDIRECTS,
             cookie_store: false,
+            proxy: proxy::Setting::default(),
         }
+    }
+
+    /// Send every request through `proxy`, in place of the platform's proxy.
+    ///
+    /// Without this or [`no_proxy`](Self::no_proxy), each request goes
+    /// through the proxy the platform is configured with when it is sent. On
+    /// Linux that is the environment: `https_proxy` or `http_proxy` by the
+    /// request's scheme, then `all_proxy`, each lowercase or uppercase,
+    /// except for the hosts `no_proxy` names; a value without a scheme is an
+    /// `http` proxy, and one with another scheme fails the request as
+    /// [`ErrorKind::Connect`](crate::ErrorKind::Connect) rather than send it
+    /// around the proxy. Other platforms' proxy settings are not yet read,
+    /// and requests there go to their origin.
+    pub fn proxy(mut self, proxy: Proxy) -> Self {
+        self.proxy = proxy::Setting::Fixed(proxy);
+        self
+    }
+
+    /// Send every request to its origin, whatever proxy the platform is
+    /// configured with.
+    pub fn no_proxy(mut self) -> Self {
+        self.proxy = proxy::Setting::Direct;
+        self
     }
 
     /// Whether the client keeps the cookies servers set and sends them
@@ -316,6 +346,7 @@ impl ClientBuilder {
             timeouts: self.timeouts,
             max_redirects: self.max_redirects,
             cookies: self.cookie_store.then(Arc::default),
+            proxy: Arc::new(self.proxy),
             pool: Arc::new(Pool::new(self.timeouts, trust)),
             _unwind: NotUnwindSafe::default(),
         }

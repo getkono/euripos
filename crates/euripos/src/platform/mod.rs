@@ -54,6 +54,14 @@ pub(crate) const OBSERVES_NETWORK: bool = cfg!(any(
     target_os = "android"
 ));
 
+/// Whether the platform's proxy configuration is the environment's
+/// `http_proxy`, `https_proxy`, `all_proxy` and `no_proxy` (docs/scope.md,
+/// "Platform integration"), which [`crate::proxy`] reads for each request.
+/// Elsewhere the platform's own configuration is not yet read, and requests
+/// go to their origin unless the caller sets a proxy.
+// TODO(#63): route through the proxy Android, Windows and Apple report.
+pub(crate) const PROXY_FROM_ENVIRONMENT: bool = cfg!(target_os = "linux");
+
 /// The platform's network source, opened on the monitor's runtime. `None`
 /// where the platform reports nothing about the network, or the source could
 /// not be opened.
