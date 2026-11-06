@@ -45,12 +45,14 @@ depends = ["lint:fmt", "lint:clippy", "lint:deny"]
 [tasks."lint:fmt"]
 run = "cargo fmt --all --check"
 
-# Default features, then every feature: code behind a feature (the content
-# codings) is linted, tested and licence-checked too.
+# Default features, then every feature, then none: code behind a feature (the
+# content codings) is linted, tested and licence-checked too, and code for a
+# build without one (no `crypto-*` provider) is linted and tested.
 [tasks."lint:clippy"]
 run = [
   "cargo clippy --workspace --all-targets --locked -- -D warnings",
   "cargo clippy --workspace --all-targets --locked --all-features -- -D warnings",
+  "cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings",
 ]
 
 [tasks."lint:deny"]
@@ -62,6 +64,7 @@ description = "Unit, integration and doc tests on the host"
 run = [
   "cargo test --workspace --all-targets --locked",
   "cargo test --workspace --all-targets --locked --all-features",
+  "cargo test --workspace --all-targets --locked --no-default-features",
   "cargo test --workspace --doc --locked",
 ]
 

@@ -230,8 +230,6 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    // TODO(#32): drop once `crypto-ring` selects ring.
-    let _ = rustls::crypto::ring::default_provider().install_default();
     let client = Client::new();
     let next = Arc::new(AtomicUsize::new(0));
     let start = Instant::now();

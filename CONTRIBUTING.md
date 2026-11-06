@@ -94,7 +94,7 @@ The [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/checklist.h
 - Features are additive and never change a public type or signature: no `cfg(feature)` on a public item, the same rule as `cfg(target_os)`.
 - Feature names are kebab-case. A choice between implementations of one concern is `<concern>-<choice>`, for example `crypto-ring`; the concern stays open to a second choice without renaming the first.
 - Default features are the smallest set that makes a working client on every supported platform.
-- An optional behaviour is a feature named for what it adds, for example `gzip`, `brotli` and `zstd` for the response content codings ([docs/design/parity.md](docs/design/parity.md)). Code behind a feature is tested and linted by `mise run test` and `mise run lint`, which run with all features as well as the defaults.
+- An optional behaviour is a feature named for what it adds, for example `gzip`, `brotli` and `zstd` for the response content codings ([docs/design/parity.md](docs/design/parity.md)). Code behind a feature is tested and linted by `mise run test` and `mise run lint`, which run with the defaults, with all features and with none, so code for a build without a feature (no `crypto-*` provider) is covered as well.
 - One crypto provider (ring) and one runtime (tokio) are in the dependency graph; `deny.toml` bans the alternatives. Admitting another moves it out of the ban list in the change that adds its feature. [ADR 0001](docs/adr/0001-crypto-provider.md) sets how provider features combine.
 
 ## Dependencies

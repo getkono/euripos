@@ -67,12 +67,23 @@ impl Trust {
     }
 }
 
-/// The crypto provider the client uses.
+/// The crypto provider the client uses: ring, which `crypto-ring` selects,
+/// whatever the process installed as its default.
 ///
-/// No `crypto-*` feature wires a provider into rustls yet, so this is the
+/// See docs/adr/0001-crypto-provider.md, "Choice".
+#[cfg(feature = "crypto-ring")]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a build without a provider feature can fail here"
+)]
+fn provider() -> Result<Arc<CryptoProvider>, Error> {
+    Ok(Arc::new(rustls::crypto::ring::default_provider()))
+}
+
+/// The crypto provider the client uses: with no `crypto-*` feature, the
 /// process-wide default the application installed, as
 /// docs/adr/0001-crypto-provider.md specifies for a build without one.
-// TODO(#32): use ring when `crypto-ring` is enabled.
+#[cfg(not(feature = "crypto-ring"))]
 fn provider() -> Result<Arc<CryptoProvider>, Error> {
     CryptoProvider::get_default().cloned().ok_or_else(|| {
         Error::with_source(
@@ -131,6 +142,16 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::Tls);
         let source = std::error::Error::source(&error).map(ToString::to_string);
         assert_eq!(source.as_deref(), Some("not initialised"));
+    }
+
+    #[cfg(not(feature = "crypto-ring"))]
+    #[test]
+    fn without_a_provider_feature_the_installed_default_is_used() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let installed = rustls::crypto::CryptoProvider::get_default()
+            .expect("a provider is installed for the process");
+        let provider = super::provider().expect("the installed provider is found");
+        assert!(Arc::ptr_eq(&provider, installed));
     }
 
     #[test]

@@ -73,26 +73,26 @@ Option 1 is how the hyper-util pool layers are meant to compose for ALPN, and it
 ### Constraints
 
 - rustls with the platform verifier on every platform, over a Network.framework connection on macOS and iOS (scope, "Platform integration"; [ADR 0003](adr/0003-apple-network-framework.md)); one crypto provider, ring ([ADR 0001](adr/0001-crypto-provider.md)).
-- ring cannot be in the normal dependency graph until `mise run api:cfg` renders each target where its C code builds (#29).
+- ring's C code builds for a target only on a host with that target's toolchain, so `mise run api:cfg` renders each OS on its own host (#29).
 - No platform type or call in the public API.
 
 ### Alternatives
 
-1. rustls, tokio-rustls and rustls-platform-verifier, offering `h2` then `http/1.1` by ALPN, on the provider ADR 0001 specifies.
-2. The same, with ring wired in through `crypto-ring` now.
+1. rustls, tokio-rustls and rustls-platform-verifier, offering `h2` then `http/1.1` by ALPN, on the provider ADR 0001 specifies: ring through `crypto-ring`, or the process-wide default with no `crypto-*` feature.
+2. The same, always on the process-wide default, leaving the application to install ring.
 3. Each platform's native TLS.
 
 ### Choice
 
-1. `crates/euripos/src/tls.rs` builds one rustls `ClientConfig` per client on its first `https` request: the platform verifier, the safe default protocol versions, and ALPN `h2`, `http/1.1`. Until #32 wires ring in, the provider is the process-wide default (`rustls::crypto::CryptoProvider::install_default`), the path ADR 0001 specifies for a build with no `crypto-*` feature; with none installed, an `https` request fails with `ErrorKind::Tls`. A failure to build the configuration is not kept, so a provider installed later is used.
+1. `crates/euripos/src/tls.rs` builds one rustls `ClientConfig` per client on its first `https` request: the platform verifier, the safe default protocol versions, and ALPN `h2`, `http/1.1`. With `crypto-ring` (a default feature) the provider is `rustls::crypto::ring::default_provider()`, whatever the process installed as its default (#32). With no `crypto-*` feature it is the process-wide default (`rustls::crypto::CryptoProvider::install_default`), the path ADR 0001 specifies for a build without one; with none installed, an `https` request fails with `ErrorKind::Tls`. A failure to build the configuration is not kept, so a provider installed later is used.
 
 ### Rationale
 
-Option 1 is what the scope and ADR 0001 fix. Option 2 is the ADR's end state, and #32 reaches it once #29 lands; doing it here would fail the `check` and `gates` jobs for every non-host target. Option 3 is a second TLS stack on the platforms where the scope names rustls. On Android the platform verifier needs the trust initialisation the Android integration (#12) adds; until then the verifier, uninitialised, would panic while verifying a certificate, so `crates/euripos/src/platform/android.rs` reports it unavailable and `tls.rs` fails `https` there with `ErrorKind::Tls` before calling it.
+Option 1 is what the scope and ADR 0001 fix. Option 2 was the state before #32, while ring could not be in the normal graph (#29); it makes every application call into rustls before its first `https` request, which the default features exist to spare it. Option 3 is a second TLS stack on the platforms where the scope names rustls. On Android the platform verifier needs the trust initialisation the Android integration (#12) adds; until then the verifier, uninitialised, would panic while verifying a certificate, so `crates/euripos/src/platform/android.rs` reports it unavailable and `tls.rs` fails `https` there with `ErrorKind::Tls` before calling it.
 
 ### Validated by
 
-`tls::tests::alpn_offers_h2_before_http1`, `tls::tests::an_unavailable_platform_verifier_fails_as_tls`, `platform::android::tests::platform_verifier_is_unavailable_until_initialised` (the `android` CI job, on the emulator), `client::tests::tls::*`, and `mise run api:cfg` (the public API is the same on every target and feature set). That the platform verifier accepts a public server's certificate is checked by hand, not in CI, which has no internet dependency in tests (CONTRIBUTING.md, "Tests").
+`tls::tests::alpn_offers_h2_before_http1`, `tls::tests::an_unavailable_platform_verifier_fails_as_tls`, `platform::android::tests::platform_verifier_is_unavailable_until_initialised` (the `android` CI job, on the emulator), `client::tests::tls::*`, `tls_timeout_fires_while_the_server_never_answers_the_client_hello` in `crates/euripos/tests/timeouts.rs` (its handshake starts with no provider installed for the process, so `crypto-ring` supplied one), and `mise run api:cfg` (the public API is the same on every target and feature set). That the platform verifier accepts a public server's certificate is checked by hand, not in CI, which has no internet dependency in tests (CONTRIBUTING.md, "Tests").
 
 ## Default timeouts
 

@@ -25,7 +25,7 @@ rustls and quinn each need a crypto provider, and both default to aws-lc-rs. Two
 
 ### Choice
 
-1. ring is the baseline provider. The facade crate has a `crypto-ring` feature, on by default; the change that adds TLS makes it enable `rustls/ring`, and the change that adds HTTP/3 makes it enable `quinn?/rustls-ring`. Until then the feature selects nothing, because nothing in the graph uses a provider yet; it exists now so its name, and the scheme below, are fixed before anything depends on them. Putting ring in the graph first needs `mise run api:cfg` to render each target where ring's C code can build, which it cannot from one Linux host (#29).
+1. ring is the baseline provider. The facade crate has a `crypto-ring` feature, on by default; it enables `rustls/ring` and `tokio-rustls/ring`, and the client's TLS configuration (`crates/euripos/src/tls.rs`) uses `rustls::crypto::ring::default_provider()` whenever it is on, whatever the process installed as its default (#32). The change that adds HTTP/3 makes it enable `quinn?/rustls-ring`. ring in the graph needs `mise run api:cfg` to render each target on a host where ring's C code builds, which the `api-cfg-render` CI jobs do (#29).
 
 The feature scheme, which any later provider follows:
 
@@ -70,7 +70,7 @@ A size claim is only kept if CI fails when it stops holding. Without a budget, a
 
 1. The `size-budget` workflow (`.github/workflows/size-budget.yml`) builds the minimal client per target and fails when its stripped size exceeds that target's budget. Each budget is the stripped size first measured plus 10%, rounded up to a byte, and is written next to the measured size in the workflow's matrix.
 
-Raising a budget needs a commit of its own, `build(size): ...` or the commit of the change that needs it, whose message says what grew, by how much, and why the growth is worth it; the new budget is the new measured size plus 10%. The change that wires TLS through `crypto-ring` raises them this way, since it adds ring's code to the client for the first time.
+Raising a budget needs a commit of its own, `build(size): ...` or the commit of the change that needs it, whose message says what grew, by how much, and why the growth is worth it; the new budget is the new measured size plus 10%. The change that wired TLS through `crypto-ring` (#32) left them as they were: the minimal client's empty `main` reaches no TLS code, so the linker drops ring's, and a local `x86_64-unknown-linux-gnu` build is 332744 bytes stripped both with `crypto-ring` selecting ring and with `--no-default-features`.
 
 ### Rationale
 
@@ -111,7 +111,7 @@ aws-lc-rs may be faster than ring on some handshakes and ciphers, and it is the 
 
 ### Measurement
 
-The size aws-lc-rs adds over ring was measured on `x86_64-unknown-linux-gnu`, the one supported target a Linux host can link without a platform SDK. The minimal client of the size budget links no provider until #32 wires `crypto-ring` into rustls, and with an empty `main` it would drop a provider's code as dead anyway, so the measured program is a standalone TLS client whose provider code is reachable. It connects over TCP, builds a `rustls::ClientConfig` with `builder_with_provider` and `rustls_platform_verifier::Verifier`, completes a handshake through `tokio_rustls::TlsConnector` on a current-thread tokio runtime, and reads a response. Three builds differ only in the provider feature on rustls and tokio-rustls: none (TCP only, no rustls), `ring`, and `aws-lc-rs`. The versions are the ones `Cargo.lock` holds where it has them: rustls 0.23.46, tokio-rustls 0.26.6, rustls-platform-verifier 0.7.1, tokio 1.54.1, ring 0.17.14; and aws-lc-rs 1.19.0 with aws-lc-sys 0.47.0. Rust 1.99.1 (`rust-toolchain.toml`), GCC 16.2.1, release profile with symbols stripped as `mise run size` builds it.
+The size aws-lc-rs adds over ring was measured on `x86_64-unknown-linux-gnu`, the one supported target a Linux host can link without a platform SDK. The minimal client of the size budget has an empty `main`, so it drops a provider's code as dead even with `crypto-ring` wired into rustls (#32), and the measured program is a standalone TLS client whose provider code is reachable. It connects over TCP, builds a `rustls::ClientConfig` with `builder_with_provider` and `rustls_platform_verifier::Verifier`, completes a handshake through `tokio_rustls::TlsConnector` on a current-thread tokio runtime, and reads a response. Three builds differ only in the provider feature on rustls and tokio-rustls: none (TCP only, no rustls), `ring`, and `aws-lc-rs`. The versions are the ones `Cargo.lock` holds where it has them: rustls 0.23.46, tokio-rustls 0.26.6, rustls-platform-verifier 0.7.1, tokio 1.54.1, ring 0.17.14; and aws-lc-rs 1.19.0 with aws-lc-sys 0.47.0. Rust 1.99.1 (`rust-toolchain.toml`), GCC 16.2.1, release profile with symbols stripped as `mise run size` builds it.
 
 | Build | Stripped bytes | With fat LTO, one codegen unit |
 |---|---|---|
@@ -140,5 +140,5 @@ The size cost is measured and large; the benefit is not measured at all, and Pri
 
 ### Validated by
 
-- The measurement above, which #60 repeats per target once #32 has wired ring into the minimal client.
+- The measurement above, which #60 repeats per target.
 - `mise run lint:deny` fails if aws-lc-rs, aws-lc-sys or aws-lc-fips-sys enters the graph, or a feature that pulls one in is enabled.
