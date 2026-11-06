@@ -247,15 +247,41 @@ impl Pool {
 
 /// Whether a route that failed to connect with `error` gives way to the
 /// next one, as a browser moves down a PAC script's list: the proxy or the
-/// origin could not be reached, refused the tunnel, or did not answer within
-/// the connect timeout. A TLS failure, or a proxy refusing the credentials,
-/// would fail the same way on the next route, and is reported.
+/// origin could not be reached, the tunnel broke, or the connection did not
+/// complete within the connect timeout. A TLS failure, or a proxy refusing
+/// the credentials, would fail the same way on the next route, and is
+/// reported. So is a proxy's answer refusing the tunnel ([`Refused`]): it is
+/// the proxy's decision, as its refusal of a forwarded `http` request is,
+/// and the next route, `DIRECT` included, would go around it.
 fn fails_over(error: &Error) -> bool {
-    matches!(
+    if !matches!(
         error.kind(),
         ErrorKind::Connect | ErrorKind::Timeout(TimeoutKind::Connect)
-    )
+    ) {
+        return false;
+    }
+    let mut cause = error.source();
+    while let Some(current) = cause {
+        if current.is::<Refused>() {
+            return false;
+        }
+        cause = current.source();
+    }
+    true
 }
+
+/// A proxy's answer refusing a `CONNECT`, other than a `407`: the cause of
+/// the [`ErrorKind::Connect`] the tunnel fails with.
+#[derive(Debug)]
+struct Refused(StatusCode);
+
+impl fmt::Display for Refused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the proxy refused the tunnel with {}", self.0)
+    }
+}
+
+impl StdError for Refused {}
 
 /// The error `error`, a pool layer's boxed error, stands for.
 fn into_error(error: BoxError) -> Error {
@@ -412,7 +438,8 @@ impl Service<Dst> for Connector {
 /// stream to the origin.
 ///
 /// A `407` fails as [`ErrorKind::ProxyAuthRequired`]; any other refusal, or
-/// a broken exchange, as [`ErrorKind::Connect`].
+/// a broken exchange, as [`ErrorKind::Connect`]. Only a broken exchange
+/// gives way to the next route ([`fails_over`]).
 async fn tunnel(tcp: platform::Stream, dst: &Dst, proxy: &Hop) -> Result<Tunnel, Error> {
     fn connect(error: impl Into<BoxError>) -> Error {
         Error::with_source(ErrorKind::Connect, error)
@@ -442,9 +469,7 @@ async fn tunnel(tcp: platform::Stream, dst: &Dst, proxy: &Hop) -> Result<Tunnel,
             .map(TokioIo::new)
             .map_err(connect),
         StatusCode::PROXY_AUTHENTICATION_REQUIRED => Err(Error::new(ErrorKind::ProxyAuthRequired)),
-        status => Err(connect(format!(
-            "the proxy refused the tunnel with {status}"
-        ))),
+        status => Err(connect(Refused(status))),
     }
 }
 
@@ -820,7 +845,7 @@ fn host_header(authority: &Authority, scheme: Option<&Scheme>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BoxError, Dst, Hop, Pool, Setting, absolute_form, fails_over, origin_form, shared,
+        BoxError, Dst, Hop, Pool, Refused, Setting, absolute_form, fails_over, origin_form, shared,
     };
     use crate::timeout::Timeouts;
     use crate::tls::Trust;
@@ -1090,6 +1115,72 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::Connect);
     }
 
+    /// A proxy that answers: its refusal of a `CONNECT` is its answer, as a
+    /// refusal of a forwarded `http` request is, and the request does not
+    /// go around it by the next route.
+    #[tokio::test]
+    async fn a_proxy_refusing_the_tunnel_does_not_give_way_to_the_next_route() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let refusing = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let refusing_port = refusing.local_addr().expect("address").port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = refusing.accept().await {
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut buffer = [0; 1024];
+                    while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                        match stream.read(&mut buffer).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(read) => head.extend_from_slice(&buffer[..read]),
+                        }
+                    }
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n")
+                        .await;
+                });
+            }
+        });
+        let next = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let next_port = next.local_addr().expect("address").port();
+        let reached = Arc::new(AtomicBool::new(false));
+        tokio::spawn({
+            let reached = reached.clone();
+            async move {
+                while next.accept().await.is_ok() {
+                    reached.store(true, Ordering::SeqCst);
+                }
+            }
+        });
+        let pool = Pool::new(Timeouts::default(), Trust::platform());
+        let routes = [Some(refusing_port), Some(next_port)]
+            .into_iter()
+            .map(|port| Dst {
+                tls: true,
+                host: "example.com".into(),
+                port: 443,
+                proxy: port.map(|port| Hop {
+                    host: "127.0.0.1".into(),
+                    port,
+                    auth: None,
+                }),
+            })
+            .collect();
+        let request = Request::get("https://example.com/")
+            .body(Body::empty())
+            .expect("request");
+        let error = pool
+            .send(routes, request)
+            .await
+            .expect_err("the proxy refused the tunnel");
+        assert_eq!(error.kind(), ErrorKind::Connect);
+        assert!(!fails_over(&error));
+        assert!(!reached.load(Ordering::SeqCst));
+    }
+
     #[test]
     fn only_a_failure_to_connect_fails_over() {
         assert!(fails_over(&Error::new(ErrorKind::Connect)));
@@ -1101,6 +1192,10 @@ mod tests {
         assert!(!fails_over(&Error::new(ErrorKind::Timeout(
             TimeoutKind::Tls
         ))));
+        assert!(!fails_over(&Error::with_source(
+            ErrorKind::Connect,
+            Refused(http::StatusCode::FORBIDDEN)
+        )));
     }
 
     #[test]
