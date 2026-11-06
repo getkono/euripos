@@ -19,16 +19,16 @@ pub(crate) use apple::{Stream, connect, network_source, query_https};
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{network_source, query_https};
 #[cfg(target_os = "windows")]
-pub(crate) use windows::network_source;
+pub(crate) use windows::{network_source, query_https};
 
 /// Query `name`'s HTTPS records through the platform's resolver
 /// ([`crate::dns`]) on `network`, where the platform can put a query to a
 /// given network, and on the network it is on otherwise. Where the platform
 /// has no way to query them, there is no answer, and the origin's records are
 /// `Unknown`.
-// TODO(#57): `DnsQueryEx` on Windows (docs/adr/0002-windows-dns.md).
 #[cfg(not(any(
     target_os = "linux",
+    target_os = "windows",
     target_os = "android",
     target_os = "macos",
     target_os = "ios"

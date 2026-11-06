@@ -53,10 +53,6 @@ libc = "0.2"
 netlink-sys = { version = "0.9", default-features = false, features = ["tokio_socket"] }
 zbus = { version = "6", default-features = false, features = ["tokio", "proxy"] }
 
-# The Windows network monitor (docs/design/network-context.md): IP Helper
-# change notifications and routes, the Network List Manager's cost over COM,
-# and WinHTTP's proxy configuration. `windows-core` is named for the COM
-# `implement` macro, which refers to it, and for its `std` error conversions.
 # The Android integration (docs/design/android.md): the JVM and the
 # application `Context` from `ndk-context`, and `jni` to call into them, at the
 # major version rustls-platform-verifier takes, so its initialisation shares
@@ -65,9 +61,15 @@ zbus = { version = "6", default-features = false, features = ["tokio", "proxy"] 
 jni = { version = "0.22", default-features = false }
 ndk-context = "0.1"
 
+# The Windows network monitor (docs/design/network-context.md): IP Helper
+# change notifications and routes, the Network List Manager's cost over COM,
+# and WinHTTP's proxy configuration. HTTPS records (docs/design/https-svcb.md)
+# through `DnsQueryEx`. `windows-core` is named for the COM `implement` macro,
+# which refers to it, and for its `std` error conversions.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", default-features = false, features = [
   "Win32_Foundation",
+  "Win32_NetworkManagement_Dns",
   "Win32_NetworkManagement_IpHelper",
   "Win32_NetworkManagement_Ndis",
   "Win32_Networking_NetworkListManager",
