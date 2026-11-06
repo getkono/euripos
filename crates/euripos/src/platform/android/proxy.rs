@@ -3,6 +3,7 @@
 //! connection to one host goes through.
 
 use crate::ProxyConfig;
+use crate::proxy::wildcard;
 
 /// A `ProxyInfo`, as the monitor's Java reports it. Empty where the network
 /// has no proxy.
@@ -77,7 +78,11 @@ impl Settings {
             return Hop::Direct;
         };
         if port == 0
-            || (self.pac.is_none() && self.exclusions.iter().any(|pattern| matches(pattern, host)))
+            || (self.pac.is_none()
+                && self
+                    .exclusions
+                    .iter()
+                    .any(|pattern| wildcard(pattern, host)))
         {
             return Hop::Direct;
         }
@@ -89,35 +94,9 @@ impl Settings {
     }
 }
 
-/// Whether `host` matches `pattern` whole, where `*` matches any run of
-/// characters, ignoring ASCII case as host names do.
-fn matches(pattern: &str, host: &str) -> bool {
-    let pattern = pattern.as_bytes();
-    let host = host.as_bytes();
-    let (mut p, mut h) = (0, 0);
-    // The last `*` seen, and the host position it is tried from next.
-    let mut star = None;
-    while h < host.len() {
-        if p < pattern.len() && pattern[p] == b'*' {
-            star = Some((p, h));
-            p += 1;
-        } else if p < pattern.len() && pattern[p].eq_ignore_ascii_case(&host[h]) {
-            p += 1;
-            h += 1;
-        } else if let Some((star_p, star_h)) = star {
-            p = star_p + 1;
-            h = star_h + 1;
-            star = Some((star_p, h));
-        } else {
-            return false;
-        }
-    }
-    pattern[p..].iter().all(|&byte| byte == b'*')
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Hop, Settings, matches};
+    use super::{Hop, Settings};
     use crate::ProxyConfig;
 
     #[test]
@@ -185,20 +164,6 @@ mod tests {
             Hop::Direct
         );
         assert_eq!(settings.with_port(70_000).hop("example.com"), Hop::Direct);
-    }
-
-    #[test]
-    fn patterns_match_whole_hosts_with_stars_anywhere() {
-        assert!(matches("example.com", "example.com"));
-        assert!(!matches("example.com", "www.example.com"));
-        assert!(!matches("example.com", "example.co"));
-        assert!(matches("*.example.com", "a.b.example.com"));
-        assert!(!matches("*.example.com", "example.com"));
-        assert!(matches("*", "anything"));
-        assert!(matches("192.168.*.1", "192.168.10.1"));
-        assert!(!matches("192.168.*.1", "192.168.10.2"));
-        assert!(matches("*a*b*", "xxaxxbxx"));
-        assert!(!matches("*a*b*", "xxbxxaxx"));
     }
 
     impl Settings {

@@ -58,6 +58,22 @@ pub(crate) async fn network_source() -> Option<WindowsSource> {
     })
 }
 
+/// The routes the `WinHTTP` proxy settings give a request to `host` on
+/// `port`, over TLS when `tls`: a PAC script's or WPAD's list for the
+/// origin, or the fixed proxy unless its bypass list names the host. Read
+/// for each request on a blocking thread, as a script may take a while to
+/// fetch and run.
+pub(crate) async fn proxy_routes(
+    tls: bool,
+    host: &str,
+    port: u16,
+) -> Result<Vec<Option<crate::proxy::Hop>>, crate::Error> {
+    let host = host.to_owned();
+    tokio::task::spawn_blocking(move || proxy::routes(tls, &host, port))
+        .await
+        .map_err(|error| crate::Error::with_source(crate::ErrorKind::Connect, error))?
+}
+
 /// The Windows network source.
 pub(crate) struct WindowsSource {
     notify: Arc<Notify>,

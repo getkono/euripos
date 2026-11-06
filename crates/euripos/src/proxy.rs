@@ -176,7 +176,7 @@ impl Setting {
 /// rather than sending the request around the proxy configured; an empty
 /// list is the origin directly.
 #[cfg_attr(
-    not(any(test, target_os = "android")),
+    not(any(test, target_os = "android", target_os = "windows")),
     expect(dead_code, reason = "the other platforms' sources are wired next")
 )]
 pub(crate) fn platform_routes<'a>(
@@ -197,10 +197,46 @@ pub(crate) fn platform_routes<'a>(
     }
 }
 
+/// Whether `host` matches `pattern` whole, where `*` matches any run of
+/// characters, ignoring ASCII case as host names do: the form of the
+/// bypass lists Android and Windows keep.
+#[cfg_attr(
+    not(any(test, target_os = "android", target_os = "windows")),
+    expect(dead_code, reason = "only the Android and Windows bypass lists use it")
+)]
+pub(crate) fn wildcard(pattern: &str, host: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let host = host.as_bytes();
+    let (mut p, mut h) = (0, 0);
+    // The last `*` seen, and the host position it is tried from next.
+    let mut star = None;
+    while h < host.len() {
+        if p < pattern.len() && pattern[p] == b'*' {
+            star = Some((p, h));
+            p += 1;
+        } else if p < pattern.len() && pattern[p].eq_ignore_ascii_case(&host[h]) {
+            p += 1;
+            h += 1;
+        } else if let Some((star_p, star_h)) = star {
+            p = star_p + 1;
+            h = star_h + 1;
+            star = Some((star_p, h));
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|&byte| byte == b'*')
+}
+
 /// The proxy a configured value names: an `http` URI, or `host[:port]`,
 /// which is an `http` proxy.
 #[cfg_attr(
-    not(any(test, target_os = "linux", target_os = "android")),
+    not(any(
+        test,
+        target_os = "linux",
+        target_os = "android",
+        target_os = "windows"
+    )),
     expect(dead_code, reason = "the other platforms' sources are wired next")
 )]
 pub(crate) fn proxy_value(value: &str) -> Result<Hop, Error> {
@@ -273,7 +309,9 @@ fn percent_decode(text: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Hop, Proxy, Setting, base64, percent_decode, platform_routes, proxy_value};
+    use super::{
+        Hop, Proxy, Setting, base64, percent_decode, platform_routes, proxy_value, wildcard,
+    };
     use crate::ErrorKind;
 
     /// The route through the proxy at `host:port` with no credentials, as
@@ -397,6 +435,20 @@ mod tests {
         );
         let error = proxy_value("socks5://proxy.example:1080").expect_err("socks");
         assert_eq!(error.kind(), ErrorKind::Connect);
+    }
+
+    #[test]
+    fn patterns_match_whole_hosts_with_stars_anywhere() {
+        assert!(wildcard("example.com", "example.com"));
+        assert!(!wildcard("example.com", "www.example.com"));
+        assert!(!wildcard("example.com", "example.co"));
+        assert!(wildcard("*.example.com", "a.b.example.com"));
+        assert!(!wildcard("*.example.com", "example.com"));
+        assert!(wildcard("*", "anything"));
+        assert!(wildcard("192.168.*.1", "192.168.10.1"));
+        assert!(!wildcard("192.168.*.1", "192.168.10.2"));
+        assert!(wildcard("*a*b*", "xxaxxbxx"));
+        assert!(!wildcard("*a*b*", "xxbxxaxx"));
     }
 
     #[test]

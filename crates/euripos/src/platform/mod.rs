@@ -21,7 +21,7 @@ pub(crate) use apple::{Stream, connect, network_source, query_https};
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{network_source, proxy_routes, query_https};
 #[cfg(target_os = "windows")]
-pub(crate) use windows::{network_source, query_https};
+pub(crate) use windows::{network_source, proxy_routes, query_https};
 
 /// Query `name`'s HTTPS records through the platform's resolver
 /// ([`crate::dns`]) on `network`, where the platform can put a query to a
@@ -63,7 +63,7 @@ pub(crate) const OBSERVES_NETWORK: bool = cfg!(any(
 ///
 /// Where the platform has no proxy configuration to read, every request
 /// goes to its origin.
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
 #[allow(
     clippy::unused_async,
     clippy::unnecessary_wraps,
