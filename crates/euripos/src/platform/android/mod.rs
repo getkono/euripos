@@ -240,7 +240,7 @@ fn metering(flags: u32) -> Metering {
 /// settings.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "consumed by the proxy path, #49")
+    expect(dead_code, reason = "consumed by the platform proxy path, #63")
 )]
 pub(crate) fn proxy_for(host: &str) -> proxy::Hop {
     last().proxy.hop(host)

@@ -142,7 +142,7 @@ On the emulator: `platform::android::tests::sockets_bind_to_a_network_by_handle`
 
 ### Problem
 
-The proxy the platform's own HTTP stack uses on a network, including a PAC script, should be the one the client uses (#49), and should be re-read when it changes rather than once ([reqwest#2674](https://github.com/seanmonstar/reqwest/issues/2674)).
+The proxy the platform's own HTTP stack uses on a network, including a PAC script, should be the one the client uses (#63), and should be re-read when it changes rather than once ([reqwest#2674](https://github.com/seanmonstar/reqwest/issues/2674)).
 
 ### Constraints
 
@@ -162,7 +162,7 @@ For a PAC script:
 
 ### Choice
 
-Option 1 in each. `proxy()` is `Automatic` with a PAC URL, `Manual` with a fixed host, and `Direct` with neither. An internal resolver gives the hop for a host: with a PAC URL, the local PAC proxy once it reports a port, and direct until then; with a fixed proxy, the proxy unless one of its exclusion patterns (`*` matches any run of characters, ASCII case ignored) matches the whole host. Its caller is the proxy path (#49).
+Option 1 in each. `proxy()` is `Automatic` with a PAC URL, `Manual` with a fixed host, and `Direct` with neither. An internal resolver gives the hop for a host: with a PAC URL, the local PAC proxy once it reports a port, and direct until then; with a fixed proxy, the proxy unless one of its exclusion patterns (`*` matches any run of characters, ASCII case ignored) matches the whole host. Its caller is the platform proxy path (#63).
 
 ### Rationale
 
