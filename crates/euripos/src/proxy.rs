@@ -445,6 +445,12 @@ mod tests {
     }
 
     #[test]
+    fn a_sign_is_not_a_hex_digit_in_an_escape() {
+        assert_eq!(percent_decode("%+f"), b"%+f");
+        assert_eq!(percent_decode("%-f"), b"%-f");
+    }
+
+    #[test]
     fn the_environment_picks_the_variable_for_the_scheme_then_all_proxy() {
         let vars = env(&[
             ("http_proxy", "http://plain:1"),
