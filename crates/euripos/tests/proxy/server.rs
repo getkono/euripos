@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use euripos::http::{HeaderMap, Method, Request, Response, StatusCode};
+use euripos::http::{HeaderMap, Method, Request, Response, StatusCode, header};
 use euripos::{Body, Client, Proxy};
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
@@ -50,6 +50,18 @@ impl ProxyServer {
 /// it. A `CONNECT` answered `200` becomes a tunnel to the authority it names;
 /// any other request answered `200` gets the body `via proxy`.
 pub(crate) async fn proxy(answer: fn(&Seen) -> u16) -> ProxyServer {
+    serve(answer, None).await
+}
+
+/// Starts a proxy that answers every request `302 Found` with
+/// `Location: location`.
+pub(crate) async fn redirecting_proxy(location: String) -> ProxyServer {
+    serve(|_| 302, Some(location)).await
+}
+
+/// Starts a proxy that answers with the status `answer` gives, and with
+/// `Location` when `location` is given.
+async fn serve(answer: fn(&Seen) -> u16, location: Option<String>) -> ProxyServer {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let address = listener.local_addr().expect("address");
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -57,9 +69,11 @@ pub(crate) async fn proxy(answer: fn(&Seen) -> u16) -> ProxyServer {
     tokio::spawn(async move {
         while let Ok((tcp, _)) = listener.accept().await {
             let record = record.clone();
+            let location = location.clone();
             tokio::spawn(async move {
                 let service = hyper::service::service_fn(move |request: Request<Incoming>| {
                     let record = record.clone();
+                    let location = location.clone();
                     async move {
                         let seen = Seen {
                             method: request.method().clone(),
@@ -86,10 +100,12 @@ pub(crate) async fn proxy(answer: fn(&Seen) -> u16) -> ProxyServer {
                         } else {
                             Body::empty()
                         };
-                        let response = Response::builder()
-                            .status(StatusCode::from_u16(status).expect("a status"))
-                            .body(body)
-                            .expect("a valid response");
+                        let mut response = Response::builder()
+                            .status(StatusCode::from_u16(status).expect("a status"));
+                        if let Some(location) = location {
+                            response = response.header(header::LOCATION, location);
+                        }
+                        let response = response.body(body).expect("a valid response");
                         Ok::<_, Infallible>(response)
                     }
                 });
