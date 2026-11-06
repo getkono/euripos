@@ -178,7 +178,9 @@ impl Reading {
         let mut facts = NetworkFacts {
             ipv4: availability(self.ipv4),
             ipv6: availability(self.ipv6),
-            // The path carries no proxy configuration.
+            // The path carries no proxy configuration, and the settings
+            // the client routes by (`proxy::routes`, read per request) send
+            // no change signal a reading could follow.
             proxy: ProxyConfig::Unknown,
             ..NetworkFacts::UNKNOWN
         };

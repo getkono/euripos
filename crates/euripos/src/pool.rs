@@ -86,10 +86,17 @@ impl Dst {
         })
     }
 
-    /// The origin reached through the proxy `setting` picks for it.
-    pub(crate) fn route(self, setting: &Setting) -> Result<Self, Error> {
-        let proxy = setting.hop(self.tls, &self.host)?;
-        Ok(Self { proxy, ..self })
+    /// The origin reached by each route `setting` gives it, in the order to
+    /// try them. Never empty.
+    pub(crate) async fn routes(self, setting: &Setting) -> Result<Vec<Self>, Error> {
+        let routes = setting.routes(self.tls, &self.host, self.port).await?;
+        Ok(routes
+            .into_iter()
+            .map(|proxy| Self {
+                proxy,
+                ..self.clone()
+            })
+            .collect())
     }
 
     /// Whether requests to the origin are sent to a proxy whole, rather
@@ -109,9 +116,10 @@ pub(crate) struct Pool {
     send: Box<SendFn>,
 }
 
-/// Sends a request to an origin, resolving to the response head and the
-/// connection it holds until its body ends.
-type SendFn = dyn Fn(Dst, Request<Body>) -> BoxFuture<Result<(Response<Incoming>, Lease), Error>>
+/// Sends a request to an origin by the first of its routes that connects,
+/// resolving to the response head and the connection it holds until its
+/// body ends.
+type SendFn = dyn Fn(Vec<Dst>, Request<Body>) -> BoxFuture<Result<(Response<Incoming>, Lease), Error>>
     + Send
     + Sync;
 
@@ -144,64 +152,81 @@ impl Pool {
         let map = Arc::new(Mutex::new(map));
         let read_stall = timeouts.read_stall;
 
-        let send = move |dst: Dst, request: Request<Body>| -> BoxFuture<_> {
+        let send = move |routes: Vec<Dst>, request: Request<Body>| -> BoxFuture<_> {
             let map = map.clone();
             Box::pin(async move {
-                let mut attempt = 0;
-                loop {
-                    let mut origin = {
-                        let mut map = map.lock().unwrap_or_else(PoisonError::into_inner);
-                        let origin = map.service(&dst);
-                        // `Shared` replaces a closed HTTP/2 connection itself,
-                        // under its lock.
-                        origin
-                            .fallback_mut()
-                            .retain(|http1: &mut Http1Sender| http1.is_reusable());
-                        origin.clone()
+                let mut routes = routes.into_iter().peekable();
+                let (dst, mut lease) = loop {
+                    let Some(dst) = routes.next() else {
+                        return Err(Error::with_source(ErrorKind::Connect, "no route to try"));
                     };
-                    poll_fn(|cx| origin.poll_ready(cx))
-                        .await
-                        .map_err(into_error)?;
-                    let mut connection = origin.call(dst.clone()).await.map_err(into_error)?;
-                    if let Err(error) = poll_fn(|cx| connection.poll_ready(cx)).await {
-                        // Nothing has been sent on it: another connection
-                        // may serve the request.
-                        if attempt < STALE_RETRIES {
-                            attempt += 1;
-                            continue;
+                    let mut attempt = 0;
+                    let checkout = loop {
+                        let mut origin = {
+                            let mut map = map.lock().unwrap_or_else(PoisonError::into_inner);
+                            let origin = map.service(&dst);
+                            // `Shared` replaces a closed HTTP/2 connection
+                            // itself, under its lock.
+                            origin
+                                .fallback_mut()
+                                .retain(|http1: &mut Http1Sender| http1.is_reusable());
+                            origin.clone()
+                        };
+                        if let Err(error) = poll_fn(|cx| origin.poll_ready(cx)).await {
+                            break Err(into_error(error));
                         }
-                        return Err(into_error(error));
-                    }
-                    let abandoned = connection
-                        .fallback_ref()
-                        .map(|http1| http1.inner().abandoned.clone());
-                    let mut lease = Lease {
-                        connection: Box::new(connection),
-                        abandoned,
-                        clean: false,
+                        let mut connection = match origin.call(dst.clone()).await {
+                            Ok(connection) => connection,
+                            Err(error) => break Err(into_error(error)),
+                        };
+                        if let Err(error) = poll_fn(|cx| connection.poll_ready(cx)).await {
+                            // Nothing has been sent on it: another connection
+                            // may serve the request.
+                            if attempt < STALE_RETRIES {
+                                attempt += 1;
+                                continue;
+                            }
+                            break Err(into_error(error));
+                        }
+                        break Ok(connection);
                     };
-                    // `connection` moved into the lease, which marks an HTTP/1.1
-                    // connection unusable if this future is dropped before the
-                    // response arrives. The stall deadline starts here, before
-                    // the request body is written, as docs/baseline.md
-                    // ("Default timeouts") specifies.
-                    let response = until(
-                        deadline(read_stall),
-                        TimeoutKind::ReadStall,
-                        lease.call(request),
-                    )
-                    .await?;
-                    // A proxy that forwards the request answers for itself
-                    // only when it refuses it; no origin sends a `407`
-                    // (RFC 9110 §15.5.8). The lease is dropped unreleased,
-                    // so the connection is closed.
-                    if dst.forwarded()
-                        && response.status() == StatusCode::PROXY_AUTHENTICATION_REQUIRED
-                    {
-                        return Err(Error::new(ErrorKind::ProxyAuthRequired));
+                    match checkout {
+                        Ok(connection) => {
+                            let abandoned = connection
+                                .fallback_ref()
+                                .map(|http1| http1.inner().abandoned.clone());
+                            let lease = Lease {
+                                connection: Box::new(connection),
+                                abandoned,
+                                clean: false,
+                            };
+                            break (dst, lease);
+                        }
+                        // Nothing has been sent: the next route may connect.
+                        Err(error) if routes.peek().is_some() && fails_over(&error) => {}
+                        Err(error) => return Err(error),
                     }
-                    return Ok((response, lease));
+                };
+                // `connection` moved into the lease, which marks an HTTP/1.1
+                // connection unusable if this future is dropped before the
+                // response arrives. The stall deadline starts here, before
+                // the request body is written, as docs/baseline.md
+                // ("Default timeouts") specifies.
+                let response = until(
+                    deadline(read_stall),
+                    TimeoutKind::ReadStall,
+                    lease.call(request),
+                )
+                .await?;
+                // A proxy that forwards the request answers for itself only
+                // when it refuses it; no origin sends a `407` (RFC 9110
+                // §15.5.8). The lease is dropped unreleased, so the
+                // connection is closed.
+                if dst.forwarded() && response.status() == StatusCode::PROXY_AUTHENTICATION_REQUIRED
+                {
+                    return Err(Error::new(ErrorKind::ProxyAuthRequired));
                 }
+                Ok((response, lease))
             })
         };
         Self {
@@ -209,15 +234,54 @@ impl Pool {
         }
     }
 
-    /// Sends `request` to `dst`.
+    /// Sends `request` by the first of `routes` that connects, trying them
+    /// in order.
     pub(crate) fn send(
         &self,
-        dst: Dst,
+        routes: Vec<Dst>,
         request: Request<Body>,
     ) -> BoxFuture<Result<(Response<Incoming>, Lease), Error>> {
-        (self.send)(dst, request)
+        (self.send)(routes, request)
     }
 }
+
+/// Whether a route that failed to connect with `error` gives way to the
+/// next one, as a browser moves down a PAC script's list: the proxy or the
+/// origin could not be reached, the tunnel broke, or the connection did not
+/// complete within the connect timeout. A TLS failure, or a proxy refusing
+/// the credentials, would fail the same way on the next route, and is
+/// reported. So is a proxy's answer refusing the tunnel ([`Refused`]): it is
+/// the proxy's decision, as its refusal of a forwarded `http` request is,
+/// and the next route, `DIRECT` included, would go around it.
+fn fails_over(error: &Error) -> bool {
+    if !matches!(
+        error.kind(),
+        ErrorKind::Connect | ErrorKind::Timeout(TimeoutKind::Connect)
+    ) {
+        return false;
+    }
+    let mut cause = error.source();
+    while let Some(current) = cause {
+        if current.is::<Refused>() {
+            return false;
+        }
+        cause = current.source();
+    }
+    true
+}
+
+/// A proxy's answer refusing a `CONNECT`, other than a `407`: the cause of
+/// the [`ErrorKind::Connect`] the tunnel fails with.
+#[derive(Debug)]
+struct Refused(StatusCode);
+
+impl fmt::Display for Refused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the proxy refused the tunnel with {}", self.0)
+    }
+}
+
+impl StdError for Refused {}
 
 /// The error `error`, a pool layer's boxed error, stands for.
 fn into_error(error: BoxError) -> Error {
@@ -374,7 +438,8 @@ impl Service<Dst> for Connector {
 /// stream to the origin.
 ///
 /// A `407` fails as [`ErrorKind::ProxyAuthRequired`]; any other refusal, or
-/// a broken exchange, as [`ErrorKind::Connect`].
+/// a broken exchange, as [`ErrorKind::Connect`]. Only a broken exchange
+/// gives way to the next route ([`fails_over`]).
 async fn tunnel(tcp: platform::Stream, dst: &Dst, proxy: &Hop) -> Result<Tunnel, Error> {
     fn connect(error: impl Into<BoxError>) -> Error {
         Error::with_source(ErrorKind::Connect, error)
@@ -404,9 +469,7 @@ async fn tunnel(tcp: platform::Stream, dst: &Dst, proxy: &Hop) -> Result<Tunnel,
             .map(TokioIo::new)
             .map_err(connect),
         StatusCode::PROXY_AUTHENTICATION_REQUIRED => Err(Error::new(ErrorKind::ProxyAuthRequired)),
-        status => Err(connect(format!(
-            "the proxy refused the tunnel with {status}"
-        ))),
+        status => Err(connect(Refused(status))),
     }
 }
 
@@ -781,8 +844,12 @@ fn host_header(authority: &Authority, scheme: Option<&Scheme>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BoxError, Dst, Setting, absolute_form, origin_form, shared};
-    use crate::{Body, ErrorKind};
+    use super::{
+        BoxError, Dst, Hop, Pool, Refused, Setting, absolute_form, fails_over, origin_form, shared,
+    };
+    use crate::timeout::Timeouts;
+    use crate::tls::Trust;
+    use crate::{Body, Error, ErrorKind, TimeoutKind};
     use http::{HeaderValue, Request, Uri, header};
     use std::future::{Ready, ready};
     use std::sync::Arc;
@@ -902,31 +969,233 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_routed_origin_is_keyed_by_its_proxy_too() {
+    /// The one route `setting` gives `dst`.
+    async fn route(dst: &Dst, setting: Setting) -> Dst {
+        let mut routes = dst.clone().routes(&setting).await.expect("routed");
+        assert_eq!(routes.len(), 1);
+        routes.remove(0)
+    }
+
+    #[tokio::test]
+    async fn a_routed_origin_is_keyed_by_its_proxy_too() {
         let uri = Uri::from_static("http://example.com/");
         let direct = Dst::from_uri(&uri).expect("origin");
         let proxy = crate::Proxy::new("http://proxy.example:3128").expect("proxy");
-        let routed = direct
-            .clone()
-            .route(&Setting::Fixed(proxy.clone()))
-            .expect("routed");
+        let routed = route(&direct, Setting::Fixed(proxy.clone())).await;
         assert_ne!(routed, direct);
         assert!(routed.forwarded());
-        let tunnelled = Dst::from_uri(&Uri::from_static("https://example.com/"))
-            .expect("origin")
-            .route(&Setting::Fixed(proxy.clone()))
-            .expect("routed");
+        let tunnelled = route(
+            &Dst::from_uri(&Uri::from_static("https://example.com/")).expect("origin"),
+            Setting::Fixed(proxy.clone()),
+        )
+        .await;
         assert!(!tunnelled.forwarded());
-        let other = direct
-            .clone()
-            .route(&Setting::Fixed(proxy.basic_auth("user", "password")))
-            .expect("routed");
+        let other = route(
+            &direct,
+            Setting::Fixed(proxy.basic_auth("user", "password")),
+        )
+        .await;
         assert_ne!(other, routed);
+        assert_eq!(route(&direct, Setting::Direct).await, direct);
+    }
+
+    /// Answers every connection with one `200 OK` whose body is `body`,
+    /// on loopback, for the rest of the test.
+    async fn answering(body: &'static str) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut buffer = [0; 1024];
+                    while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                        match stream.read(&mut buffer).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(read) => head.extend_from_slice(&buffer[..read]),
+                        }
+                    }
+                    let _ = stream
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{body}",
+                                body.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                });
+            }
+        });
+        address
+    }
+
+    /// A loopback port nothing listens on.
+    async fn closed_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        listener.local_addr().expect("address").port()
+    }
+
+    /// The origin at `origin`, reached through each of `proxies` in turn,
+    /// `None` being the origin directly.
+    fn routes(origin: std::net::SocketAddr, proxies: &[Option<u16>]) -> Vec<Dst> {
+        proxies
+            .iter()
+            .map(|port| Dst {
+                tls: false,
+                host: origin.ip().to_string(),
+                port: origin.port(),
+                proxy: port.map(|port| Hop {
+                    host: "127.0.0.1".into(),
+                    port,
+                    auth: None,
+                }),
+            })
+            .collect()
+    }
+
+    async fn body(pool: &Pool, routes: Vec<Dst>, origin: std::net::SocketAddr) -> String {
+        use http_body::Body as _;
+        let request = Request::get(format!("http://{origin}/"))
+            .body(Body::empty())
+            .expect("request");
+        let (response, _lease) = pool.send(routes, request).await.expect("a response");
+        let mut incoming = response.into_body();
+        let mut bytes = Vec::new();
+        while let Some(frame) =
+            std::future::poll_fn(|cx| std::pin::Pin::new(&mut incoming).poll_frame(cx)).await
+        {
+            if let Ok(data) = frame.expect("a frame").into_data() {
+                bytes.extend_from_slice(&data);
+            }
+        }
+        String::from_utf8(bytes).expect("utf-8")
+    }
+
+    // A PAC script's list, in order: a proxy that refuses the connection
+    // gives way to the next proxy, and that to the origin directly.
+    #[tokio::test]
+    async fn a_route_that_cannot_connect_gives_way_to_the_next() {
+        let pool = Pool::new(Timeouts::default(), Trust::platform());
+        let origin = answering("origin").await;
+        let proxy = answering("proxy").await;
+        let closed = closed_port().await;
         assert_eq!(
-            direct.clone().route(&Setting::Direct).expect("direct"),
-            direct
+            body(
+                &pool,
+                routes(origin, &[Some(closed), Some(proxy.port())]),
+                origin
+            )
+            .await,
+            "proxy"
         );
+        assert_eq!(
+            body(&pool, routes(origin, &[Some(closed), None]), origin).await,
+            "origin"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_last_route_that_cannot_connect_fails_the_request() {
+        let pool = Pool::new(Timeouts::default(), Trust::platform());
+        let origin = answering("origin").await;
+        let closed = closed_port().await;
+        let request = Request::get(format!("http://{origin}/"))
+            .body(Body::empty())
+            .expect("request");
+        let error = pool
+            .send(routes(origin, &[Some(closed), Some(closed)]), request)
+            .await
+            .expect_err("no route connects");
+        assert_eq!(error.kind(), ErrorKind::Connect);
+    }
+
+    /// A proxy that answers: its refusal of a `CONNECT` is its answer, as a
+    /// refusal of a forwarded `http` request is, and the request does not
+    /// go around it by the next route.
+    #[tokio::test]
+    async fn a_proxy_refusing_the_tunnel_does_not_give_way_to_the_next_route() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let refusing = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let refusing_port = refusing.local_addr().expect("address").port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = refusing.accept().await {
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut buffer = [0; 1024];
+                    while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                        match stream.read(&mut buffer).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(read) => head.extend_from_slice(&buffer[..read]),
+                        }
+                    }
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n")
+                        .await;
+                });
+            }
+        });
+        let next = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let next_port = next.local_addr().expect("address").port();
+        let reached = Arc::new(AtomicBool::new(false));
+        tokio::spawn({
+            let reached = reached.clone();
+            async move {
+                while next.accept().await.is_ok() {
+                    reached.store(true, Ordering::SeqCst);
+                }
+            }
+        });
+        let pool = Pool::new(Timeouts::default(), Trust::platform());
+        let routes = [Some(refusing_port), Some(next_port)]
+            .into_iter()
+            .map(|port| Dst {
+                tls: true,
+                host: "example.com".into(),
+                port: 443,
+                proxy: port.map(|port| Hop {
+                    host: "127.0.0.1".into(),
+                    port,
+                    auth: None,
+                }),
+            })
+            .collect();
+        let request = Request::get("https://example.com/")
+            .body(Body::empty())
+            .expect("request");
+        let error = pool
+            .send(routes, request)
+            .await
+            .expect_err("the proxy refused the tunnel");
+        assert_eq!(error.kind(), ErrorKind::Connect);
+        assert!(!fails_over(&error));
+        assert!(!reached.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn only_a_failure_to_connect_fails_over() {
+        assert!(fails_over(&Error::new(ErrorKind::Connect)));
+        assert!(fails_over(&Error::new(ErrorKind::Timeout(
+            TimeoutKind::Connect
+        ))));
+        assert!(!fails_over(&Error::new(ErrorKind::Tls)));
+        assert!(!fails_over(&Error::new(ErrorKind::ProxyAuthRequired)));
+        assert!(!fails_over(&Error::new(ErrorKind::Timeout(
+            TimeoutKind::Tls
+        ))));
+        assert!(!fails_over(&Error::with_source(
+            ErrorKind::Connect,
+            Refused(http::StatusCode::FORBIDDEN)
+        )));
     }
 
     #[test]

@@ -1,12 +1,10 @@
 //! Which proxy a request goes through, and the credentials it presents
-//! there: the caller's [`Proxy`], or the platform's configuration, which on
-//! Linux is the environment.
+//! there: the caller's [`Proxy`], or the routes the platform's configuration
+//! gives it ([`platform::proxy_routes`]), tried in order.
 //!
 //! See docs/design/proxy.md.
 
-use std::ffi::OsString;
 use std::fmt;
-use std::net::IpAddr;
 
 use http::uri::Scheme;
 use http::{HeaderValue, Uri};
@@ -131,7 +129,7 @@ impl fmt::Debug for Hop {
 }
 
 /// A proxy URI that names no `http` proxy.
-fn invalid(reason: &'static str) -> Error {
+pub(crate) fn invalid(reason: &'static str) -> Error {
     Error::with_source(ErrorKind::Connect, reason)
 }
 
@@ -148,122 +146,120 @@ pub(crate) enum Setting {
 }
 
 impl Setting {
-    /// The proxy a request to `host`, over TLS when `tls`, goes through, or
-    /// `None` when it goes to the origin directly.
-    pub(crate) fn hop(&self, tls: bool, host: &str) -> Result<Option<Hop>, Error> {
+    /// The routes a request to `host` on `port`, over TLS when `tls`, may
+    /// take, in the order to try them: through a proxy, or `None` for the
+    /// origin directly. Never empty.
+    ///
+    /// The platform's configuration is asked when the request is sent, so a
+    /// change to it applies from the next request.
+    pub(crate) async fn routes(
+        &self,
+        tls: bool,
+        host: &str,
+        port: u16,
+    ) -> Result<Vec<Option<Hop>>, Error> {
         match self {
-            Self::Fixed(proxy) => Ok(Some(proxy.hop.clone())),
-            Self::System if platform::PROXY_FROM_ENVIRONMENT => {
-                from_environment(tls, host, |name| std::env::var_os(name))
-            }
-            Self::System | Self::Direct => Ok(None),
+            Self::Fixed(proxy) => Ok(vec![Some(proxy.hop.clone())]),
+            Self::Direct => Ok(vec![None]),
+            Self::System => platform::proxy_routes(tls, host, port).await,
         }
     }
 }
 
-/// The proxy the environment names for a request to `host`, over TLS when
-/// `tls`, as curl reads it: `https_proxy` or `http_proxy` by the request's
-/// scheme, then `all_proxy`, each lowercase before uppercase, unless
-/// `no_proxy` names the host. `HTTP_PROXY` is ignored when `REQUEST_METHOD`
-/// is set, where a CGI request's `Proxy` header could have set it
-/// (CVE-2016-5385). A value without a scheme is an `http` proxy.
-fn from_environment(
-    tls: bool,
-    host: &str,
-    var: impl Fn(&str) -> Option<OsString>,
-) -> Result<Option<Hop>, Error> {
-    let set = |name: &str| var(name).filter(|value| !value.is_empty());
-    if let Some(no_proxy) = set("no_proxy").or_else(|| set("NO_PROXY"))
-        && excluded(&no_proxy.to_string_lossy(), host)
-    {
-        return Ok(None);
+/// The routes a platform's proxy list names, in its order: each entry a
+/// proxy's `host[:port]` (or an `http` URI), or `None` for the origin
+/// directly.
+///
+/// An entry that names no `http` proxy (a SOCKS proxy, or one reached over
+/// TLS) is skipped. A list of nothing but such entries fails as
+/// [`ErrorKind::Connect`], as an unusable proxy in the environment does,
+/// rather than sending the request around the proxy configured; an empty
+/// list is the origin directly.
+#[cfg_attr(
+    not(any(
+        test,
+        target_os = "windows",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios"
+    )),
+    expect(
+        dead_code,
+        reason = "Linux reads one proxy from the environment; other platforms have no list"
+    )
+)]
+pub(crate) fn platform_routes<'a>(
+    entries: impl IntoIterator<Item = Option<&'a str>>,
+) -> Result<Vec<Option<Hop>>, Error> {
+    let mut routes = Vec::new();
+    let mut skipped = None;
+    for entry in entries {
+        match entry.map(proxy_value).transpose() {
+            Ok(route) => routes.push(route),
+            Err(error) => skipped = Some(error),
+        }
     }
-    let value = if tls {
-        set("https_proxy").or_else(|| set("HTTPS_PROXY"))
-    } else {
-        set("http_proxy").or_else(|| {
-            if var("REQUEST_METHOD").is_some() {
-                None
-            } else {
-                set("HTTP_PROXY")
-            }
-        })
+    match skipped {
+        Some(error) if routes.is_empty() => Err(error),
+        _ if routes.is_empty() => Ok(vec![None]),
+        _ => Ok(routes),
     }
-    .or_else(|| set("all_proxy"))
-    .or_else(|| set("ALL_PROXY"));
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let value = value
-        .into_string()
-        .map_err(|_| invalid("the proxy in the environment is not UTF-8"))?;
+}
+
+/// Whether `host` matches `pattern` whole, where `*` matches any run of
+/// characters, ignoring ASCII case as host names do: the form of the
+/// bypass lists Android and Windows keep.
+#[cfg_attr(
+    not(any(test, target_os = "android", target_os = "windows")),
+    expect(dead_code, reason = "only the Android and Windows bypass lists use it")
+)]
+pub(crate) fn wildcard(pattern: &str, host: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let host = host.as_bytes();
+    let (mut p, mut h) = (0, 0);
+    // The last `*` seen, and the host position it is tried from next.
+    let mut star = None;
+    while h < host.len() {
+        if p < pattern.len() && pattern[p] == b'*' {
+            star = Some((p, h));
+            p += 1;
+        } else if p < pattern.len() && pattern[p].eq_ignore_ascii_case(&host[h]) {
+            p += 1;
+            h += 1;
+        } else if let Some((star_p, star_h)) = star {
+            p = star_p + 1;
+            h = star_h + 1;
+            star = Some((star_p, h));
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|&byte| byte == b'*')
+}
+
+/// The proxy a configured value names: an `http` URI, or `host[:port]`,
+/// which is an `http` proxy.
+#[cfg_attr(
+    not(any(
+        test,
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios"
+    )),
+    expect(
+        dead_code,
+        reason = "a platform with no proxy configuration reads no value"
+    )
+)]
+pub(crate) fn proxy_value(value: &str) -> Result<Hop, Error> {
     let value = value.trim();
     if value.contains("://") {
-        Hop::parse(value).map(Some)
+        Hop::parse(value)
     } else {
-        Hop::parse(&format!("http://{value}")).map(Some)
+        Hop::parse(&format!("http://{value}"))
     }
-}
-
-/// Whether `no_proxy`, a comma-separated list, names `host`: `*` names
-/// every host; a name names itself and every host under it, with or without
-/// a leading dot; an IP address names itself, and `ADDRESS/BITS` the
-/// addresses in that range.
-fn excluded(no_proxy: &str, host: &str) -> bool {
-    let address = host.parse::<IpAddr>().ok();
-    no_proxy
-        .split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .any(|entry| {
-            if entry == "*" {
-                return true;
-            }
-            let entry = entry
-                .strip_prefix('[')
-                .and_then(|entry| entry.strip_suffix(']'))
-                .unwrap_or(entry);
-            if let Some(address) = address {
-                return in_range(entry, address);
-            }
-            let entry = entry.strip_prefix('.').unwrap_or(entry);
-            host.eq_ignore_ascii_case(entry)
-                || (host.len() > entry.len()
-                    && host.as_bytes()[host.len() - entry.len() - 1] == b'.'
-                    && host[host.len() - entry.len()..].eq_ignore_ascii_case(entry))
-        })
-}
-
-/// Whether `address` is the address `entry` names, or in the range
-/// `ADDRESS/BITS` names.
-fn in_range(entry: &str, address: IpAddr) -> bool {
-    let (network, bits) = match entry.split_once('/') {
-        Some((network, bits)) => match bits.parse::<u32>() {
-            Ok(bits) => (network, bits),
-            Err(_) => return false,
-        },
-        None => (entry, u32::MAX),
-    };
-    match (network.parse::<IpAddr>(), address) {
-        (Ok(IpAddr::V4(network)), IpAddr::V4(address)) => {
-            prefix_matches(network.to_bits().into(), address.to_bits().into(), bits, 32)
-        }
-        (Ok(IpAddr::V6(network)), IpAddr::V6(address)) => {
-            prefix_matches(network.to_bits(), address.to_bits(), bits, 128)
-        }
-        _ => false,
-    }
-}
-
-/// Whether the first `bits` of `network` and `address`, of `width` bits
-/// each, are equal; all of them when `bits` exceeds `width`.
-fn prefix_matches(network: u128, address: u128, bits: u32, width: u32) -> bool {
-    let bits = bits.min(width);
-    let shift = width - bits;
-    if shift >= 128 {
-        return true;
-    }
-    network >> shift == address >> shift
 }
 
 /// `Basic` credentials for `user` and `password` (RFC 7617 §2), marked
@@ -327,28 +323,16 @@ fn percent_decode(text: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Hop, Proxy, Setting, base64, excluded, from_environment, percent_decode};
+    use super::{
+        Hop, Proxy, Setting, base64, percent_decode, platform_routes, proxy_value, wildcard,
+    };
     use crate::ErrorKind;
-    use std::ffi::OsString;
-
-    /// An environment holding only `vars`.
-    fn env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
-        let vars: Vec<(String, OsString)> = vars
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), OsString::from(value)))
-            .collect();
-        move |name| {
-            vars.iter()
-                .find(|(set, _)| set == name)
-                .map(|(_, value)| value.clone())
-        }
-    }
 
     /// The route through the proxy at `host:port` with no credentials, as
-    /// `Setting::hop` returns it.
+    /// `Setting::routes` gives it.
     #[allow(
         clippy::unnecessary_wraps,
-        reason = "compared with `Setting::hop`'s result"
+        reason = "compared with `Setting::routes`'s result"
     )]
     fn hop(host: &str, port: u16) -> Option<Hop> {
         Some(Hop {
@@ -453,110 +437,72 @@ mod tests {
     }
 
     #[test]
-    fn the_environment_picks_the_variable_for_the_scheme_then_all_proxy() {
-        let vars = env(&[
-            ("http_proxy", "http://plain:1"),
-            ("HTTPS_PROXY", "secure:2"),
-            ("all_proxy", "http://every:3"),
-        ]);
+    fn a_configured_value_without_a_scheme_is_an_http_proxy() {
         assert_eq!(
-            from_environment(false, "example.com", &vars).expect("ok"),
-            hop("plain", 1)
+            proxy_value(" proxy.example:3128 ").ok(),
+            hop("proxy.example", 3128)
         );
+        assert_eq!(proxy_value("[::1]:8080").ok(), hop("::1", 8080));
         assert_eq!(
-            from_environment(true, "example.com", &vars).expect("ok"),
-            hop("secure", 2)
+            proxy_value("http://proxy.example").ok(),
+            hop("proxy.example", 80)
         );
-        let vars = env(&[("ALL_PROXY", "every:3"), ("https_proxy", "")]);
-        assert_eq!(
-            from_environment(true, "example.com", &vars).expect("ok"),
-            hop("every", 3)
-        );
-        assert_eq!(
-            from_environment(true, "example.com", env(&[])).expect("ok"),
-            None
-        );
-    }
-
-    #[test]
-    fn lowercase_comes_before_uppercase() {
-        let vars = env(&[("https_proxy", "lower:1"), ("HTTPS_PROXY", "upper:2")]);
-        assert_eq!(
-            from_environment(true, "example.com", vars).expect("ok"),
-            hop("lower", 1)
-        );
-    }
-
-    #[test]
-    fn uppercase_http_proxy_is_ignored_in_a_cgi_request() {
-        let vars = env(&[("HTTP_PROXY", "injected:1"), ("REQUEST_METHOD", "GET")]);
-        assert_eq!(
-            from_environment(false, "example.com", vars).expect("ok"),
-            None
-        );
-        let vars = env(&[("http_proxy", "set:1"), ("REQUEST_METHOD", "GET")]);
-        assert_eq!(
-            from_environment(false, "example.com", vars).expect("ok"),
-            hop("set", 1)
-        );
-    }
-
-    #[test]
-    fn no_proxy_sends_the_hosts_it_names_directly() {
-        let vars = env(&[
-            ("http_proxy", "proxy:1"),
-            ("NO_PROXY", "internal.example, 10.0.0.0/8"),
-        ]);
-        assert_eq!(
-            from_environment(false, "api.internal.example", &vars).expect("ok"),
-            None
-        );
-        assert_eq!(
-            from_environment(false, "10.1.2.3", &vars).expect("ok"),
-            None
-        );
-        assert_eq!(
-            from_environment(false, "example.com", &vars).expect("ok"),
-            hop("proxy", 1)
-        );
-    }
-
-    #[test]
-    fn an_unusable_environment_proxy_fails_rather_than_going_direct() {
-        let vars = env(&[("https_proxy", "socks5://proxy:1080")]);
-        let error = from_environment(true, "example.com", vars).expect_err("socks");
+        let error = proxy_value("socks5://proxy.example:1080").expect_err("socks");
         assert_eq!(error.kind(), ErrorKind::Connect);
     }
 
     #[test]
-    fn no_proxy_entries_match_names_suffixes_addresses_and_ranges() {
-        assert!(excluded("*", "example.com"));
-        assert!(excluded("example.com", "example.com"));
-        assert!(excluded("example.com", "www.Example.COM"));
-        assert!(excluded(".example.com", "example.com"));
-        assert!(excluded(".example.com", "a.example.com"));
-        assert!(!excluded("example.com", "badexample.com"));
-        assert!(!excluded("www.example.com", "example.com"));
-        assert!(excluded("localhost,127.0.0.1", "127.0.0.1"));
-        assert!(!excluded("127.0.0.1", "127.0.0.2"));
-        assert!(excluded("192.168.0.0/16", "192.168.4.5"));
-        assert!(!excluded("192.168.0.0/16", "192.169.0.1"));
-        assert!(excluded("0.0.0.0/0", "8.8.8.8"));
-        assert!(excluded("[::1]", "::1"));
-        assert!(excluded("2001:db8::/32", "2001:db8:1::1"));
-        assert!(!excluded("2001:db8::/32", "2001:db9::1"));
-        assert!(!excluded("10.0.0.0/8", "::1"));
-        assert!(!excluded("10.0.0.0/x", "10.0.0.1"));
-        assert!(!excluded(" , ", "example.com"));
+    fn patterns_match_whole_hosts_with_stars_anywhere() {
+        assert!(wildcard("example.com", "example.com"));
+        assert!(!wildcard("example.com", "www.example.com"));
+        assert!(!wildcard("example.com", "example.co"));
+        assert!(wildcard("*.example.com", "a.b.example.com"));
+        assert!(!wildcard("*.example.com", "example.com"));
+        assert!(wildcard("*", "anything"));
+        assert!(wildcard("192.168.*.1", "192.168.10.1"));
+        assert!(!wildcard("192.168.*.1", "192.168.10.2"));
+        assert!(wildcard("*a*b*", "xxaxxbxx"));
+        assert!(!wildcard("*a*b*", "xxbxxaxx"));
     }
 
     #[test]
-    fn direct_and_fixed_settings_ignore_the_platform() {
-        assert_eq!(Setting::Direct.hop(true, "example.com").expect("ok"), None);
+    fn a_platform_list_keeps_its_order_and_skips_what_is_no_http_proxy() {
+        assert_eq!(
+            platform_routes([Some("a:1"), None, Some("socks5://b:2"), Some("c:3")]).expect("ok"),
+            [hop("a", 1), None, hop("c", 3)]
+        );
+        assert_eq!(platform_routes([]).expect("ok"), [None]);
+        assert_eq!(platform_routes([None]).expect("ok"), [None]);
+        let error = platform_routes([Some("https://secure:443")]).expect_err("no http proxy");
+        assert_eq!(error.kind(), ErrorKind::Connect);
+    }
+
+    #[tokio::test]
+    async fn direct_and_fixed_settings_ignore_the_platform() {
+        assert_eq!(
+            Setting::Direct
+                .routes(true, "example.com", 443)
+                .await
+                .expect("ok"),
+            [None]
+        );
         let proxy = Proxy::new("http://proxy.example:3128").expect("proxy");
         assert_eq!(
-            Setting::Fixed(proxy).hop(false, "example.com").expect("ok"),
-            hop("proxy.example", 3128)
+            Setting::Fixed(proxy)
+                .routes(false, "example.com", 80)
+                .await
+                .expect("ok"),
+            [hop("proxy.example", 3128)]
         );
+    }
+
+    // Whatever the host is configured with, the platform gives at least one
+    // route, the origin directly where it has nothing to say, or an error.
+    #[tokio::test]
+    async fn the_platform_never_gives_no_route() {
+        match Setting::System.routes(true, "example.com", 443).await {
+            Ok(routes) => assert_ne!(routes, []),
+            Err(error) => assert_eq!(error.kind(), ErrorKind::Connect),
+        }
     }
 }

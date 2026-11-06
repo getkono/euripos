@@ -155,9 +155,14 @@ impl Client {
                     .headers_mut()
                     .insert(header::ACCEPT_ENCODING, accept_encoding.clone());
             }
-            let dst = Dst::from_uri(&uri)?.route(&self.proxy)?;
-            let (response, lease) =
-                until(total, TimeoutKind::Total, self.pool.send(dst, request)).await?;
+            let dst = Dst::from_uri(&uri)?;
+            // The platform may take a while to say which proxy to use (a
+            // PAC script to fetch and run), all within the total timeout.
+            let (response, lease) = until(total, TimeoutKind::Total, async {
+                let routes = dst.routes(&self.proxy).await?;
+                self.pool.send(routes, request).await
+            })
+            .await?;
             if let Some(jar) = &self.cookies {
                 jar.store(&uri, response.headers().get_all(header::SET_COOKIE));
             }
@@ -252,8 +257,11 @@ impl ClientBuilder {
     /// except for the hosts `no_proxy` names; a value without a scheme is an
     /// `http` proxy, and one with another scheme fails the request as
     /// [`ErrorKind::Connect`](crate::ErrorKind::Connect) rather than send it
-    /// around the proxy. Other platforms' proxy settings are not yet read,
-    /// and requests there go to their origin.
+    /// around the proxy. On Android it is the default network's proxy, on
+    /// Windows the `WinHTTP` settings with their PAC script or WPAD, and on
+    /// macOS and iOS the system proxy settings with their PAC script. Where
+    /// a PAC script lists several proxies, a request that cannot connect
+    /// through one moves on to the next.
     pub fn proxy(mut self, proxy: Proxy) -> Self {
         self.proxy = proxy::Setting::Fixed(proxy);
         self

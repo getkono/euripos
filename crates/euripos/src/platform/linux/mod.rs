@@ -4,6 +4,7 @@
 mod dns;
 mod netlink;
 mod networkmanager;
+mod proxy;
 
 pub(crate) use dns::query_https;
 
@@ -51,6 +52,22 @@ pub(crate) async fn network_source() -> Option<LinuxSource> {
         metering,
         last: NetworkFacts::UNKNOWN,
     })
+}
+
+/// The route the environment gives a request to `host`, over TLS when
+/// `tls`: `https_proxy` or `http_proxy`, then `all_proxy`, unless `no_proxy`
+/// names the host ([`proxy::from_environment`]). Read for each request, so
+/// a change applies from the next one.
+#[allow(
+    clippy::unused_async,
+    reason = "the signature is every platform's; Windows and Apple resolve off the runtime"
+)]
+pub(crate) async fn proxy_routes(
+    tls: bool,
+    host: &str,
+    _port: u16,
+) -> Result<Vec<Option<crate::proxy::Hop>>, crate::Error> {
+    proxy::from_environment(tls, host, |name| env::var_os(name)).map(|route| vec![route])
 }
 
 /// The Linux network source.

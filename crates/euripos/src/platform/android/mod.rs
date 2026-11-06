@@ -238,12 +238,32 @@ fn metering(flags: u32) -> Metering {
 
 /// Where a connection to `host` should go under the default network's proxy
 /// settings.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the platform proxy path, #63")
-)]
-pub(crate) fn proxy_for(host: &str) -> proxy::Hop {
+fn proxy_for(host: &str) -> proxy::Hop {
     last().proxy.hop(host)
+}
+
+/// The route the default network's proxy gives a request to `host`, as the
+/// callback last reported it: its fixed proxy unless an exclusion matches
+/// the host, or the platform's local PAC proxy once it listens. Direct
+/// where no callback runs. The same proxy serves `http` and `https`.
+#[allow(
+    clippy::unused_async,
+    reason = "the signature is every platform's; Windows and Apple resolve off the runtime"
+)]
+pub(crate) async fn proxy_routes(
+    _tls: bool,
+    host: &str,
+    _port: u16,
+) -> Result<Vec<Option<crate::proxy::Hop>>, crate::Error> {
+    routes(&proxy_for(host))
+}
+
+/// The routes `hop` stands for.
+fn routes(hop: &proxy::Hop) -> Result<Vec<Option<crate::proxy::Hop>>, crate::Error> {
+    crate::proxy::platform_routes([match hop {
+        proxy::Hop::Direct => None,
+        proxy::Hop::Proxy(address) => Some(address.as_str()),
+    }])
 }
 
 /// Bind `socket`, before it connects, to the default network the callback
@@ -441,12 +461,46 @@ mod tests {
         assert_eq!(facts(&report).proxy, ProxyConfig::Manual);
     }
 
+    // The settings the callback reports, as the proxy path routes them.
+    #[test]
+    fn a_reported_proxy_becomes_the_route() {
+        let settings = proxy::Settings::new(
+            Some("proxy.example".into()),
+            3128,
+            Some("*.internal.example"),
+            None,
+        );
+        let route = |host| super::routes(&settings.hop(host)).expect("a usable proxy");
+        assert_eq!(
+            route("example.com"),
+            [Some(crate::proxy::Hop {
+                host: "proxy.example".into(),
+                port: 3128,
+                auth: None,
+            })]
+        );
+        assert_eq!(route("api.internal.example"), [None]);
+        let ipv6 = proxy::Settings::new(Some("2001:db8::1".into()), 8080, None, None);
+        assert_eq!(
+            super::routes(&ipv6.hop("example.com")).expect("a usable proxy")[0]
+                .as_ref()
+                .map(|hop| (hop.host.as_str(), hop.port)),
+            Some(("2001:db8::1", 8080))
+        );
+    }
+
     // The emulator's test binaries run outside any app: no JVM, no Context.
     #[tokio::test]
     async fn without_an_android_context_nothing_is_observed_or_verified() {
         assert!(network_source().await.is_none());
         assert!(super::platform_verifier().is_err());
         assert_eq!(super::proxy_for("example.com"), proxy::Hop::Direct);
+        assert_eq!(
+            super::proxy_routes(true, "example.com", 443)
+                .await
+                .expect("direct"),
+            [None]
+        );
     }
 
     // The binding is the platform's: unspecified unbinds, a value that is
