@@ -1,8 +1,9 @@
 //! Windows: the network from IP Helper, its cost from the Network List
-//! Manager, the proxy from `WinHTTP`.
+//! Manager, the proxy from `WinHTTP`, HTTPS records from `DnsQueryEx`.
 
 mod change;
 mod cost;
+mod dns;
 mod proxy;
 
 use std::io;
@@ -27,6 +28,7 @@ use crate::monitor::Source;
 use crate::{Constraint, InterfaceKind, IpAvailability, Metering, NetworkFacts, NetworkId};
 use change::Changes;
 use cost::Cost;
+pub(crate) use dns::query_https;
 
 /// The destinations whose routes stand for "the internet", as on Linux:
 /// public resolver addresses, asked for with `GetBestRoute2`, which applies

@@ -24,13 +24,13 @@ The scope lists "what the server announces (ALPN, `Alt-Svc`, HTTPS/SVCB records)
 
 ### Choice
 
-1. Every platform hands back RDATA. Linux re-encodes the `SVCB` hickory decoded (with hickory's own cache off, so the only cache is the per-network one); Android reads the whole response `android_res_nresult` returns with `dns::message`, which takes the answer section's type-65 records and the negative TTL from the authority section's SOA (RFC 2308); dnssd's reply already carries RDATA.
+1. Every platform hands back RDATA. Linux re-encodes the `SVCB` hickory decoded (with hickory's own cache off, so the only cache is the per-network one); Android reads the whole response `android_res_nresult` returns with `dns::message`, which takes the answer section's type-65 records and the negative TTL from the authority section's SOA (RFC 2308); dnssd's reply already carries RDATA, and so does `DnsQueryEx`'s flat record on Windows.
 
 The lookup of origin `host:port` queries `host` on port 443 and `_PORT._https.host` otherwise (RFC 9460, section 9.1), and none for an IP address. It follows AliasMode records up to four hops; where a name's records hold an AliasMode record, its ServiceMode records are ignored (section 2.4.1); a record that is malformed, or that makes a key mandatory which the parser does not know, is ignored (section 8). The result is `HttpsRecords::Services`, the ServiceMode records lowest priority first with the name they were found at, or `HttpsRecords::Unknown`.
 
 ### Rationale
 
-Option 1 puts the RFC's validation rules (strictly increasing keys, `mandatory`, `no-default-alpn` without `alpn`, the value shapes) in one place with one set of tests, including the RFC's own test vectors, and makes every platform's answer mean the same thing. Option 2 has four parsers that would each need those rules, and on Windows a structure whose presence depends on the Windows build (#57). Option 3 is the bypass the scope's column exists to prevent.
+Option 1 puts the RFC's validation rules (strictly increasing keys, `mandatory`, `no-default-alpn` without `alpn`, the value shapes) in one place with one set of tests, including the RFC's own test vectors, and makes every platform's answer mean the same thing. Option 2 has four parsers that would each need those rules, and on Windows a structure that only a newer request flag asks for (see "Windows"). Option 3 is the bypass the scope's column exists to prevent.
 
 ### Validated by
 
@@ -55,11 +55,11 @@ A lookup costs a round trip to a resolver that is often across the access networ
 
 ### Choice
 
-1. `dns::cache::Cache` keys entries by the network the lookup ran under (where the platform names one) and the lowercase query name. An entry lives for the least TTL of the records along its alias chain, capped at a day (RFC 8767). The absence of records is kept for the negative TTL where the platform reports one (an SOA on Android and Linux) and 60 seconds where it does not (dnssd), capped at three hours (RFC 2308). A failed or timed-out query is not kept. A zero TTL keeps nothing. At 256 entries, expired entries are dropped, then the one closest to expiring.
+1. `dns::cache::Cache` keys entries by the network the lookup ran under (where the platform names one) and the lowercase query name. An entry lives for the least TTL of the records along its alias chain, capped at a day (RFC 8767). The absence of records is kept for the negative TTL where the platform reports one (an SOA on Android and Linux, and on Windows where the list holds one) and 60 seconds where it does not (dnssd), capped at three hours (RFC 2308). A failed or timed-out query is not kept. A zero TTL keeps nothing. At 256 entries, expired entries are dropped, then the one closest to expiring.
 
 ### Rationale
 
-The key holds only as far as the query went to the network the key names, and that differs by platform. On Android the lookup's network is routed into the query: it is sent on that network's handle, and where the callback no longer reports that network the query is not sent and nothing is cached, so an answer there cannot cross networks whatever the ordering. On Linux and on Apple platforms the system resolver answers for the network it is on and cannot be asked about another, so a lookup that straddles a change, or that runs after the change and before the client reports it, can cache the new network's answer under the old `NetworkId`. This is a known gap on those platforms: the entry serves lookups keyed to the old network, including after a return to it, for the entry's TTL at most (capped at a day). Answers cached under the new network's own `NetworkId` come from queries made after the client reported it, on the resolver the system then holds. Option 2 has the same straddling window, from its other side: an answer stored after the change but before its event is cleared with everything else, while one stored after the event but answered by the old network's resolver survives as the new network's. It also discards answers for a network the client returns to, which option 1 keeps for their TTL. Option 3 is not per network on Linux (hickory's cache, which is turned off) and is not observable on the other platforms. Failures are not cached, so a resolver that was briefly unreachable does not hide the records for the negative TTL.
+The key holds only as far as the query went to the network the key names, and that differs by platform. On Android the lookup's network is routed into the query: it is sent on that network's handle, and where the callback no longer reports that network the query is not sent and nothing is cached, so an answer there cannot cross networks whatever the ordering. On Linux, Windows and Apple platforms the system resolver answers for the network it is on and cannot be asked about another, so a lookup that straddles a change, or that runs after the change and before the client reports it, can cache the new network's answer under the old `NetworkId`. This is a known gap on those platforms: the entry serves lookups keyed to the old network, including after a return to it, for the entry's TTL at most (capped at a day). Answers cached under the new network's own `NetworkId` come from queries made after the client reported it, on the resolver the system then holds. Option 2 has the same straddling window, from its other side: an answer stored after the change but before its event is cleared with everything else, while one stored after the event but answered by the old network's resolver survives as the new network's. It also discards answers for a network the client returns to, which option 1 keeps for their TTL. Option 3 is not per network on Linux (hickory's cache, which is turned off) and is not observable on the other platforms. Failures are not cached, so a resolver that was briefly unreachable does not hide the records for the negative TTL.
 
 ### Validated by
 
@@ -179,4 +179,34 @@ Option 2 is the same resolver behind a JNI call, a Java callback and an `Executo
 
 ## Windows
 
-`DnsQueryEx` is the source ([ADR 0002](../adr/0002-windows-dns.md)), and is not yet wired: which shape `DnsQueryEx` returns type-65 data in (`DNS_SVCB_DATA` or opaque bytes) depends on the Windows build, and the hosted runners cannot show what client builds return. Until #57 lands, the lookup has no answer on Windows and every origin's records are `Unknown`, which is the fallback the rest of this document already handles.
+### Problem
+
+`DnsQueryEx` is the source ([ADR 0002](../adr/0002-windows-dns.md)), and it does not hand back a response message: it returns a list of `DNS_RECORD`s, whose `Data` takes one of two shapes for type 65. One is the parsed `DNS_SVCB_DATA` (priority, target, and a `DNS_SVCB_PARAM` per key); the other is the flat `DNS_UNKNOWN_DATA` (a byte count and the RDATA as received). The shared parser reads RDATA.
+
+### Constraints
+
+- The hosted runners (Windows Server) cannot show what client builds return, so the shape must follow from documented behaviour, not from what one build was seen to do.
+- The lookup is asynchronous, and dropping it cancels the query, as on the other platforms.
+- The memory `DnsQueryEx` writes to (the result and the cancel handle) must outlive both the completion callback and any `DnsCancelQuery`.
+
+### Alternatives
+
+1. **Ask for the flat shape and pass its bytes through.** A `DNS_QUERY_REQUEST_VERSION1` request without `DNS_QUERY_PARSE_ALL_RECORDS`.
+2. **Ask for `DNS_SVCB_DATA` and re-encode it to RDATA.** A `DNS_QUERY_REQUEST3` with `DNS_QUERY_PARSE_ALL_RECORDS`.
+3. **Accept either shape and tell them apart per record.**
+
+### Choice
+
+1. `platform::windows::dns::query_https`. Microsoft's DNS constants reference documents the shape as set by the caller rather than by the build: without `DNS_QUERY_PARSE_ALL_RECORDS`, `DnsQueryEx` parses only a fixed list of types (type 65 is not among them) and returns every other type "in flat format", and "for backward compatibility, you must set `DNS_QUERY_PARSE_ALL_RECORDS` in order to parse `DNS_TYPE_SVCB` and `DNS_TYPE_HTTPS`". The request never sets it, so the flat shape is the one that occurs, on builds that predate `DNS_SVCB_DATA` and on builds that have it.
+
+A record is read where its type is 65, its section is the answer (or unset, as a cached record may leave it), and its byte count with the count's own four bytes fits in `wDataLength` (`DNS_NULL_RECORD_LENGTH`); any other record is skipped, so a record in an unexpected shape is never read past its data. `ERROR_SUCCESS` with such records is `Records`; `ERROR_SUCCESS` without them, `DNS_ERROR_RCODE_NAME_ERROR` and `DNS_INFO_NO_RECORDS` are `NoRecords`, with the lesser of an SOA's TTL and its minimum as the negative TTL where the list holds an SOA; any other status, cancellation included, is no answer. As on Linux and Apple platforms, the query goes to the network the system is on, not to the `NetworkId` the lookup names.
+
+The query is asynchronous. Its name, result, cancel handle, and the channel its answer is sent on live in one reference-counted allocation that the callback holds a reference to; a query that completes without the callback (`DnsQueryEx` not returning `DNS_REQUEST_PENDING`) has its answer read at once and that reference released. Dropping the lookup calls `DnsCancelQuery` where the callback has not started; the callback then runs with `ERROR_CANCELLED`, frees the records and releases the allocation. Every record list is freed with `DnsFree(..., DnsFreeRecordList)` once read.
+
+### Rationale
+
+Option 1 is the documented default, needs only `DNS_QUERY_REQUEST` (Windows 8), and gives the parser the bytes the server sent, so RFC 9460's validation stays in one place. Option 2 is the four-parsers problem of "Record resolution" in reverse: an encoder for each `DNS_SVCB_PARAM` kind, keys the structure may not carry (an unknown key, or one Windows adds later), and a request version older builds refuse. Option 3 needs a discriminator `DnsQueryEx` does not provide (the documented one, `DnsIsFlatRecord`, is not in the `windows` crate's bindings), for a shape that the request already rules out.
+
+### Validated by
+
+`platform::windows::dns::tests` on the Windows runner: answer-section HTTPS records in the flat shape read as their RDATA beside a CNAME and an additional-section record that are not (`https_records_of_the_answer_section_come_back_as_their_rdata`), a record whose byte count runs past its data skipped (`a_flat_record_is_read_only_within_its_data`), every no-records status with and without an SOA (`no_records_and_nxdomain_are_no_records_with_the_soa_negative_ttl`), other statuses as no answer, and a real query that completes, one refused before it starts, and one dropped mid-flight. The record lists are constructed as `DnsQueryEx` lays them out. Records from a public origin are not exercised by CI (tests have no internet dependency), and split DNS under NRPT rules on a device is #51.
