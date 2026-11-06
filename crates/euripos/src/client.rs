@@ -155,9 +155,14 @@ impl Client {
                     .headers_mut()
                     .insert(header::ACCEPT_ENCODING, accept_encoding.clone());
             }
-            let dst = Dst::from_uri(&uri)?.route(&self.proxy)?;
-            let (response, lease) =
-                until(total, TimeoutKind::Total, self.pool.send(dst, request)).await?;
+            let dst = Dst::from_uri(&uri)?;
+            // The platform may take a while to say which proxy to use (a
+            // PAC script to fetch and run), all within the total timeout.
+            let (response, lease) = until(total, TimeoutKind::Total, async {
+                let routes = dst.routes(&self.proxy).await?;
+                self.pool.send(routes, request).await
+            })
+            .await?;
             if let Some(jar) = &self.cookies {
                 jar.store(&uri, response.headers().get_all(header::SET_COOKIE));
             }

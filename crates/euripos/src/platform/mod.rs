@@ -17,7 +17,7 @@ pub(crate) use android::{bind_to_network, network_source, platform_verifier, que
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) use apple::{Stream, connect, network_source, query_https};
 #[cfg(target_os = "linux")]
-pub(crate) use linux::{network_source, query_https};
+pub(crate) use linux::{network_source, proxy_routes, query_https};
 #[cfg(target_os = "windows")]
 pub(crate) use windows::{network_source, query_https};
 
@@ -54,13 +54,26 @@ pub(crate) const OBSERVES_NETWORK: bool = cfg!(any(
     target_os = "android"
 ));
 
-/// Whether the platform's proxy configuration is the environment's
-/// `http_proxy`, `https_proxy`, `all_proxy` and `no_proxy` (docs/scope.md,
-/// "Platform integration"), which [`crate::proxy`] reads for each request.
-/// Elsewhere the platform's own configuration is not yet read, and requests
-/// go to their origin unless the caller sets a proxy.
-// TODO(#63): route through the proxy Android, Windows and Apple report.
-pub(crate) const PROXY_FROM_ENVIRONMENT: bool = cfg!(target_os = "linux");
+/// The routes the platform's proxy configuration gives a request to `host`
+/// on `port`, over TLS when `tls`, in the order to try them: through a
+/// proxy, or `None` for the origin directly. Never empty. Read for each
+/// request (docs/design/proxy.md, "Platform proxy").
+///
+/// Where the platform has no proxy configuration to read, every request
+/// goes to its origin.
+#[cfg(not(target_os = "linux"))]
+#[allow(
+    clippy::unused_async,
+    clippy::unnecessary_wraps,
+    reason = "the signature is every platform's; Windows and Apple resolve off the runtime"
+)]
+pub(crate) async fn proxy_routes(
+    _tls: bool,
+    _host: &str,
+    _port: u16,
+) -> Result<Vec<Option<crate::proxy::Hop>>, crate::Error> {
+    Ok(vec![None])
+}
 
 /// The platform's network source, opened on the monitor's runtime. `None`
 /// where the platform reports nothing about the network, or the source could
