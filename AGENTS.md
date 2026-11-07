@@ -17,7 +17,7 @@ An async Rust HTTP client with a platform-agnostic API and first-class integrati
 
 - Conventional Commits, enforced by convco. Types: feat fix docs test refactor perf build ci chore revert.
 - Pull requests are squash-merged, the only merge method. The pull request title is the commit on `main`: it is a Conventional Commit, and CI checks it.
-- Atomic commits within a pull request; every commit builds and passes tests. Breaking changes use `!` and a `BREAKING CHANGE:` footer.
-- Bug fixes: a red test commit first, then the fix.
+- Atomic commits within a pull request; every commit builds and passes tests, except a red test commit followed by its fix. Breaking changes use `!` and a `BREAKING CHANGE:` footer.
+- Bug fixes: a red test precedes the fix within the pull request; test and fix may share one commit, and every pushed head passes tests. Never bypass a hook to push a red commit.
 - `mise run check` is the local gate; CI runs the same tasks.
 - No `TODO` without an issue: write `TODO(#NN)`.
