@@ -37,9 +37,9 @@ mise is the task interface. CI runs these same tasks, so a green `mise run check
 
 - **Conventional Commits**, checked by convco against `.convco`. Types: `feat` `fix` `docs` `test` `refactor` `perf` `build` `ci` `chore` `revert`. A scope names the area: `feat(dns): ...`, `ci(repo): ...`.
 - **Squash merge only.** The pull request title becomes the one commit on `main`, so the title is a Conventional Commit, and CI checks it. The release changelog is built from those titles.
-- **Atomic commits within a pull request.** Every commit on the branch builds and passes tests, and CI checks each commit message.
+- **Atomic commits within a pull request.** Every commit on the branch builds and passes tests, except a red test commit followed by its fix, and CI checks each commit message.
 - **Breaking changes** use `!` after the type or scope and a `BREAKING CHANGE:` footer, in the commit and in the pull request title and body.
-- **Bug fixes** land as a red test commit first, then the fix.
+- **Bug fixes** start from a red test: a test that fails without the fix precedes the fix within the pull request. The test may be its own commit, pushed only together with the fix, or share one commit with it; either way every pushed head passes tests. Where they share a commit, the pull request body names the test and how it fails without the fix. Never bypass a hook to push a red commit.
 - **Update a branch** from `main` by merging it; never force-push a branch under review.
 - **No `TODO` without an issue**: write `TODO(#NN)`.
 
