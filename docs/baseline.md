@@ -164,4 +164,6 @@ The example's unit tests (`cargo test --example baseline`: argument parsing and 
 
 ## Baseline revision
 
-The baseline is `8c30f34b4edc20b6034ebbf3c8103aa2f7f860c0`, the commit on `main` that merged #33, the pull request that added this file. Later changes are measured against that revision: netlab builds the baseline from it, and a change that departs from it names its metric and shows its win over it. Tags are a maintainer's to cut.
+The baseline is the `v0.1.0` tag, `6e7fc7716f10d1be63984cba02d598c35aba5aa4`, the first release. Later changes are measured against that revision: netlab builds the baseline from it, and a change that departs from it names its metric and shows its win over it.
+
+It replaces `8c30f34b4edc20b6034ebbf3c8103aa2f7f860c0`, the commit that merged #33. That commit predates the Network.framework connection on macOS and iOS (#54, [ADR 0003](adr/0003-apple-network-framework.md)) that "Transport" describes, so a baseline built from it on Apple would connect through BSD sockets instead (#81). `v0.1.0` is still non-adaptive in the sense of "Transport": the network facts are reported through `Client::network_facts` but nothing in the request path reads them, the HTTPS-record resolver has no caller until #15, and per-network socket binding and the platform proxy are platform integration (`docs/scope.md`, "Platform integration"), not tuning.
