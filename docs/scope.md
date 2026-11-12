@@ -24,7 +24,7 @@ HTTP semantics run on hyper 1.x and hyper-util (HTTP/1.1, HTTP/2) and h3 (HTTP/3
 
 1. **Platform-agnostic public API.** No `cfg` on a public item. A platform fact surfaces as a typed value that may be `Unknown`, never as a platform type. API quality is checked statically: clippy pedantic with warnings denied, the Rust API Guidelines checklist, a `cargo public-api` snapshot and `cargo-semver-checks`.
 2. **One implementation per platform: the one that behaves correctly there.** A second implementation of the same concern on one platform needs an ADR showing that no single option is better in every way.
-3. **An optimization ships only with evidence.** Every behaviour that departs from a plain hyper/hyper-util client names its metric and shows a win over that baseline, and over reqwest, on the trace-replay lab (netlab). Without that evidence it stays off or is removed.
+3. **An optimization ships only with evidence.** Every behaviour that departs from a plain hyper/hyper-util client names its metric and shows a win over that baseline, and over reqwest, on the trace-replay lab (netlab). Without that evidence it stays off or is removed. The platform's own HTTP client is measured beside them and reported, as a reference rather than a gate; [netlab.md](design/netlab.md) names each one and defines the variables, the comparison and the regression rule.
 4. **Unknown is not a default.** A fact the platform cannot observe is `Unknown` (for example, metered on a Linux host without NetworkManager), never "not metered".
 5. **Rust API only.** Apps embed euripos in their own Rust core and wrap that in their own uniffi/JNI layer.
 
@@ -73,6 +73,6 @@ HTTP/3 uses h3 over quinn on every platform except Apple, where the QUIC transpo
 1. Capture PTF traces of representative challenging paths: tethered cellular, satellite, congested Wi-Fi, UDP-policed networks, and paths that change mid-session.
 2. Export each trace to Rattan or netem and replay it between network namespaces on Linux.
 3. Calibrate: an emulated path is used only if reference flows through it match the trace's own reference-flow (VALD) results.
-4. Run the workload suite (bulk download, many small requests, long-poll, upload) for euripos, the plain hyper baseline and reqwest.
+4. Run the workload suite (bulk download, many small requests, long-poll, upload) for euripos, the plain hyper baseline, an unmodified hyper-util client and reqwest, with the platform's native client as a reference ([netlab.md](design/netlab.md)).
 5. On iOS and Android, route the device through a Linux gateway (Wi-Fi AP or USB tether) running the same replay.
 6. Score runtime classifiers and estimators against the trace's ground truth: the per-transport policy matrix, reordering, path changes, NAT binding lifetime and capacity.
